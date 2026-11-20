@@ -1,0 +1,181 @@
+---
+title: "claude code in a sandbox"
+description: "Install Claude Code in a fibre sandbox, give it a repository, run a task headless, read what it changed, and come back to the same session later."
+---
+
+Claude Code can run without a terminal (`claude -p`), so it can work inside a sandbox: it gets a Linux machine of its
+own, with the repository, the tools and the shell it needs, and nothing it does touches your computer. Between tasks
+the sandbox sleeps with its memory and its files, so the next task finds the agent, its session and its work where
+they were.
+
+You need your fibre API key in `FIBRE_API_KEY`, `FIBRE_API_URL=https://api.fibre.dev`, and an Anthropic API key in
+`ANTHROPIC_API_KEY` for the steps that ask the model.
+
+## start a sandbox
+
+<CodeGroup>
+```typescript title="TypeScript" run
+import { Sandbox } from "@fibre-dev/sdk";
+
+const sbx = await Sandbox.create({ lifetime: 3600, labels: { example: "claude-code" } });
+```
+
+```bash title="curl" run capture=SBX=.id
+curl -sS -X POST "$FIBRE_API_URL/v1/sandboxes" \
+  -H "Authorization: Bearer $FIBRE_API_KEY" -H "Content-Type: application/json" \
+  -d '{"lifetime_sec": 3600, "labels": {"example": "claude-code"}}'
+```
+</CodeGroup>
+
+## install Claude Code
+
+Anthropic's installer puts `claude` in `~/.local/bin`. It takes about a minute, longer than an exec allows, so it runs
+as a [command](/guide/sandboxes/running-commands).
+
+<CodeGroup>
+```typescript title="TypeScript" run
+const install = await sbx.run("curl -fsSL https://claude.ai/install.sh | bash && ~/.local/bin/claude --version", { timeout: 600 });
+if (install.exitCode !== 0) throw new Error(install.stderr);
+console.log(install.stdout.trim().split("\n").pop()); // 2.1.329 (Claude Code)
+```
+
+```bash title="curl" run
+CMD=$(curl -sS -X POST "$FIBRE_API_URL/v1/sandboxes/$SBX/commands" \
+  -H "Authorization: Bearer $FIBRE_API_KEY" -H "Content-Type: application/json" \
+  -d '{"command": ["sh", "-c", "curl -fsSL https://claude.ai/install.sh | bash && ~/.local/bin/claude --version"]}' | jq -r .command_id)
+curl -sSN "$FIBRE_API_URL/v1/sandboxes/$SBX/commands/$CMD/logs?follow=1" -H "Authorization: Bearer $FIBRE_API_KEY"
+```
+</CodeGroup>
+
+```text title="output" expected
+"exit_code":0
+```
+
+To skip the install on every new sandbox, install once and save the sandbox as a
+[template](/reference/typescript-sdk#snapshot), then start new sandboxes from it.
+
+## give it a repository
+
+<CodeGroup>
+```typescript title="TypeScript" run
+const clone = await sbx.run(["git", "clone", "--depth", "1", "https://github.com/octocat/Hello-World", "/work/repo"]);
+if (clone.exitCode !== 0) throw new Error(clone.stderr);
+```
+
+```bash title="curl" run
+curl -sS -X POST "$FIBRE_API_URL/v1/sandboxes/$SBX/exec" \
+  -H "Authorization: Bearer $FIBRE_API_KEY" -H "Content-Type: application/json" \
+  -d '{"command": ["git", "clone", "--depth", "1", "https://github.com/octocat/Hello-World", "/work/repo"]}'
+```
+</CodeGroup>
+
+```json title="response" expected
+{ "exit_code": 0 }
+```
+
+A private repository works the same way, with a token in the URL or a deploy key you write into the sandbox.
+
+## run a task
+
+The task goes in through `TASK` and the key through `ANTHROPIC_API_KEY`, both given to this one command (more on the
+key [below](#the-api-key)). `--allowedTools` lists what Claude Code may do without asking; with nobody there to ask,
+anything else is refused.
+
+<CodeGroup>
+```typescript title="TypeScript" norun reason="needs your Anthropic API key"
+const task = await sbx.run(
+  ["sh", "-c", 'cd /work/repo && ~/.local/bin/claude -p "$TASK" --allowedTools "Read,Edit,Bash" --output-format json'],
+  {
+    env: { ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY!, TASK: "Rewrite the README as a short project description with a usage section." },
+    timeout: 1800,
+  },
+);
+console.log(JSON.parse(task.stdout).result);
+```
+
+```bash title="curl" norun reason="needs your Anthropic API key"
+jq -n --arg key "$ANTHROPIC_API_KEY" '{
+  command: ["sh", "-c", "cd /work/repo && ~/.local/bin/claude -p \"$TASK\" --allowedTools \"Read,Edit,Bash\" --output-format json"],
+  env: {ANTHROPIC_API_KEY: $key, TASK: "Rewrite the README as a short project description with a usage section."}
+}' | curl -sS -X POST "$FIBRE_API_URL/v1/sandboxes/$SBX/commands" \
+  -H "Authorization: Bearer $FIBRE_API_KEY" -H "Content-Type: application/json" -d @-
+```
+</CodeGroup>
+
+With `--output-format json` the last line is one JSON object: the answer in `result`, the session's id in
+`session_id`, and the cost in `total_cost_usd`. In curl, follow the command's logs as in the install step.
+
+## see what it changed
+
+<CodeGroup>
+```typescript title="TypeScript" run
+const diff = await sbx.run(["git", "-C", "/work/repo", "diff", "--stat"]);
+console.log(diff.stdout);
+```
+
+```bash title="curl" run
+curl -sS -X POST "$FIBRE_API_URL/v1/sandboxes/$SBX/exec" \
+  -H "Authorization: Bearer $FIBRE_API_KEY" -H "Content-Type: application/json" \
+  -d '{"command": ["git", "-C", "/work/repo", "diff", "--stat"]}'
+```
+</CodeGroup>
+
+```json title="response" expected
+{ "exit_code": 0 }
+```
+
+Read any file it wrote with `sbx.files.read`, or let it commit and push a branch from the sandbox.
+
+## the next task, later
+
+Leave the sandbox alone and it falls asleep after its idle timeout, with its memory and files saved. The next command
+wakes it: the repository, the installed agent and Claude Code's own session history are all still there, so
+`--continue` picks up the conversation where it stopped.
+
+<CodeGroup>
+```typescript title="TypeScript" norun reason="needs your Anthropic API key"
+const again = await Sandbox.get(sbx.id);
+const next = await again.run(
+  ["sh", "-c", 'cd /work/repo && ~/.local/bin/claude -p "$TASK" --continue --allowedTools "Read,Edit,Bash" --output-format json'],
+  { env: { ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY!, TASK: "Now add a contributing section." }, timeout: 1800 },
+);
+```
+
+```bash title="curl" norun reason="needs your Anthropic API key"
+jq -n --arg key "$ANTHROPIC_API_KEY" '{
+  command: ["sh", "-c", "cd /work/repo && ~/.local/bin/claude -p \"$TASK\" --continue --allowedTools \"Read,Edit,Bash\" --output-format json"],
+  env: {ANTHROPIC_API_KEY: $key, TASK: "Now add a contributing section."}
+}' | curl -sS -X POST "$FIBRE_API_URL/v1/sandboxes/$SBX/commands" \
+  -H "Authorization: Bearer $FIBRE_API_KEY" -H "Content-Type: application/json" -d @-
+```
+</CodeGroup>
+
+`--resume <session_id>` continues a particular session instead of the most recent one. To keep a sandbox longer than
+its lifetime, extend it with `sbx.update({ lifetime })`; more in [sleep, wake and lifetime](/guide/sandboxes/sleep-and-wake).
+
+## the API key
+
+- The key is given to the one command you pass it to, and to the programs that command starts. Other commands in the
+  sandbox don't get it in their environment, fibre doesn't write it into the sandbox's files, and fibre's API never
+  returns it.
+- Everything Claude Code runs while it works can read it: a test, an install script, code in the repository. Treat it
+  as visible to that repository's code. Use a key you can revoke, with a spending limit, and avoid giving a sandbox
+  that runs code you don't trust a key that can spend much.
+- Don't put the key in the sandbox's own environment (`env` in the SDK, `env_vars` in the API, when you create it):
+  every command would get it.
+
+## delete it
+
+<CodeGroup>
+```typescript title="TypeScript" run
+await sbx.delete();
+```
+
+```bash title="curl" run
+curl -sS -X DELETE "$FIBRE_API_URL/v1/sandboxes/$SBX" -H "Authorization: Bearer $FIBRE_API_KEY"
+```
+</CodeGroup>
+
+```json title="response" expected
+{ "deleted": true }
+```

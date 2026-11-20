@@ -1,0 +1,107 @@
+{
+  "$schema": "https://mintlify.com/docs.json",
+  "theme": "mint",
+  "name": "fibre",
+  "description": "Sandboxes for agents and the code they write: start one, run commands in it, let it sleep with its memory and wake on the next call.",
+  "colors": {
+    "primary": "#2447d8",
+    "light": "#2447d8",
+    "dark": "#182f8f"
+  },
+  "appearance": {
+    "default": "light",
+    "strict": true
+  },
+  "logo": {
+    "light": "/logo/fibre.svg",
+    "dark": "/logo/fibre.svg",
+    "href": "https://fibre.dev"
+  },
+  "favicon": "/favicon.svg",
+  "fonts": {
+    "family": "Plus Jakarta Sans",
+    "source": "/fonts/plus-jakarta-sans-latin.woff2",
+    "format": "woff2"
+  },
+  "contextual": {
+    "options": [
+      "copy",
+      "view"
+    ]
+  },
+  "navbar": {
+    "links": [
+      {
+        "label": "pricing",
+        "href": "https://fibre.dev/#pricing"
+      }
+    ]
+  },
+  "footer": {
+    "socials": {
+      "github": "https://github.com/fibre-dev"
+    }
+  },
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "guide",
+        "groups": [
+          {
+            "group": "introduction",
+            "pages": [
+              "index",
+              "guide/introduction/quickstart"
+            ]
+          },
+          {
+            "group": "sandboxes",
+            "pages": [
+              "guide/sandboxes/overview",
+              "guide/sandboxes/running-commands",
+              "guide/sandboxes/files",
+              "guide/sandboxes/sleep-and-wake",
+              "guide/sandboxes/runtimes",
+              "guide/sandboxes/browser",
+              "guide/sandboxes/desktop"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "examples",
+        "groups": [
+          {
+            "group": "getting started",
+            "pages": [
+              "examples/getting-started/hello-sandbox",
+              "examples/getting-started/dev-server"
+            ]
+          },
+          {
+            "group": "agents",
+            "pages": [
+              "examples/agents/claude-code",
+              "examples/agents/codex",
+              "examples/agents/opencode",
+              "examples/agents/claude-agent-sdk",
+              "examples/agents/agent-frameworks"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "reference",
+        "groups": [
+          {
+            "group": "reference",
+            "pages": [
+              "reference/typescript-sdk",
+              "reference/errors"
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -1,0 +1,139 @@
+---
+title: "browser"
+description: "Drive a real browser in a sandbox from your own code over the DevTools protocol, and watch it live. Its tabs and logins are kept across sleep."
+---
+
+Every sandbox on fibre's default image has a browser. One call gives you two links: one your code connects to with
+Playwright, Puppeteer or any DevTools client, and one to watch the browser live. The browser starts on that first call
+and, like everything else in the sandbox, keeps its tabs and logins across sleep.
+
+## a sandbox
+
+<CodeGroup>
+```typescript title="TypeScript" run
+import { Sandbox } from "@fibre-dev/sdk";
+
+const sbx = await Sandbox.create({ lifetime: 900, labels: { docs: "browser" } });
+```
+
+```bash title="curl" run capture=SBX=.id
+curl -sS -X POST "$FIBRE_API_URL/v1/sandboxes" \
+  -H "Authorization: Bearer $FIBRE_API_KEY" -H "Content-Type: application/json" \
+  -d '{"lifetime_sec": 900, "labels": {"docs": "browser"}}'
+```
+</CodeGroup>
+
+## get the links
+
+<CodeGroup>
+```typescript title="TypeScript" run
+const { cdpUrl, liveViewUrl, expiresAt } = await sbx.browser();
+console.log(liveViewUrl, expiresAt); // keep cdpUrl to yourself
+```
+
+```bash title="curl" run capture=CDP=.cdp_url
+curl -sS -X POST "$FIBRE_API_URL/v1/sandboxes/$SBX/browser" \
+  -H "Authorization: Bearer $FIBRE_API_KEY" -H "Content-Type: application/json" -d '{}'
+```
+</CodeGroup>
+
+```json title="response" expected
+{ "cdp_url": "…", "live_view_url": "…", "expires_at": "…" }
+```
+
+- `cdp_url` is for your code: connect to it as you would to a browser's DevTools address.
+- `live_view_url` opens the browser's screen in your own browser, to watch and click.
+- `expires_at`: both work for an hour unless you ask otherwise with `{"ttl_sec": …}` (60 seconds to a day, never past
+  the sandbox's lifetime). Ask again for new links at any time.
+
+**Treat `cdp_url` as a password.** Anyone who has it can control the browser until it expires. The live view link only
+shows the screen and passes on clicks and keys.
+
+## connect from your code
+
+<CodeGroup>
+```typescript title="TypeScript" norun  reason="needs Playwright on your machine"
+import { chromium } from "playwright";
+
+const browser = await chromium.connectOverCDP(process.env.CDP_URL!);
+const page = browser.contexts()[0].pages()[0] ?? (await browser.contexts()[0].newPage());
+await page.goto("https://example.com");
+console.log(await page.title());
+```
+
+```python title="Python" norun  reason="needs Playwright on your machine"
+import os
+from playwright.sync_api import sync_playwright
+
+with sync_playwright() as p:
+    browser = p.chromium.connect_over_cdp(os.environ["CDP_URL"])
+    context = browser.contexts[0]
+    page = context.pages[0] if context.pages else context.new_page()
+    page.goto("https://example.com")
+    print(page.title())
+```
+</CodeGroup>
+
+Use the browser's existing context, as above, rather than a new one: that is where its cookies and logins live, and
+what is kept across sleep.
+
+The DevTools address answers the usual discovery calls too:
+
+<CodeGroup>
+```typescript title="TypeScript" run
+const version = await fetch(`${cdpUrl.replace(/^ws/, "http")}/json/version`).then((r) => r.json());
+console.log(version.Browser);
+```
+
+```bash title="curl" run
+curl -sS "${CDP/ws/http}/json/version"
+```
+</CodeGroup>
+
+```json title="response" expected
+{ "Browser": "…", "webSocketDebuggerUrl": "…" }
+```
+
+## a browser from the start
+
+`"needs": ["browser"]` on create starts the browser with the sandbox, and the answer carries the links under
+`browser`. Such a sandbox runs on the `vm` runtime unless you name one: browsers run faster there.
+
+<CodeGroup>
+```typescript title="TypeScript" run
+const ready = await Sandbox.create({ needs: ["browser"], lifetime: 600, labels: { docs: "browser" } });
+console.log(ready.runtime, ready.runtimeReason); // vm needs:browser
+```
+
+```bash title="curl" run capture=B=.id
+curl -sS -X POST "$FIBRE_API_URL/v1/sandboxes" \
+  -H "Authorization: Bearer $FIBRE_API_KEY" -H "Content-Type: application/json" \
+  -d '{"needs": ["browser"], "lifetime_sec": 600, "labels": {"docs": "browser"}}'
+```
+</CodeGroup>
+
+```json title="response" expected
+{ "runtime": "vm", "runtime_reason": "needs:browser", "browser": { "cdp_url": "…", "live_view_url": "…" } }
+```
+
+## limits
+
+- One browser per sandbox.
+- A sandbox whose browser is open sleeps once no client is connected and nothing else happens in it for its idle
+  timeout; the next call or connection wakes it, with the browser as it was.
+- The browser needs fibre's default image, or an image with Chrome at the usual path.
+
+## clean up
+
+<CodeGroup>
+```typescript title="TypeScript" run
+await sbx.delete();
+await ready.delete();
+```
+
+```bash title="curl" run
+for id in "$SBX" "$B"; do
+  curl -sS -X DELETE "$FIBRE_API_URL/v1/sandboxes/$id" -H "Authorization: Bearer $FIBRE_API_KEY"; echo
+done
+```
+</CodeGroup>

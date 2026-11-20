@@ -1,0 +1,200 @@
+---
+title: "an agent built on the claude agent sdk"
+description: "Run your own agent, written with Anthropic's Claude Agent SDK, inside a fibre sandbox, and let the sandbox's sleep keep its session between tasks."
+---
+
+The Claude Agent SDK gives your own program the agent loop that Claude Code runs on: it reads files, edits them and
+runs commands on the machine it runs on. So that machine should be a sandbox, not your server. Anthropic's hosting
+guide suggests a container per session and, to save cost, shutting idle ones down and rebuilding them from a session
+store. A fibre sandbox does that part by itself: when the agent is idle the sandbox sleeps with its memory and files,
+and the next task wakes it where it was.
+
+You need your fibre API key in `FIBRE_API_KEY`, `FIBRE_API_URL=https://api.fibre.dev`, and an Anthropic API key in
+`ANTHROPIC_API_KEY` for the steps that ask the model.
+
+## start a sandbox
+
+<CodeGroup>
+```typescript title="TypeScript" run
+import { Sandbox } from "@fibre-dev/sdk";
+
+const sbx = await Sandbox.create({ lifetime: 3600, labels: { example: "claude-agent-sdk" } });
+```
+
+```bash title="curl" run capture=SBX=.id
+curl -sS -X POST "$FIBRE_API_URL/v1/sandboxes" \
+  -H "Authorization: Bearer $FIBRE_API_KEY" -H "Content-Type: application/json" \
+  -d '{"lifetime_sec": 3600, "labels": {"example": "claude-agent-sdk"}}'
+```
+</CodeGroup>
+
+## install the SDK
+
+A small Node project in the sandbox, with the SDK from npm. It takes about a minute, so it runs as a
+[command](/guide/sandboxes/running-commands).
+
+<CodeGroup>
+```typescript title="TypeScript" run
+const install = await sbx.run(
+  "mkdir -p /work/agent && cd /work/agent && npm init -y >/dev/null && npm install @anthropic-ai/claude-agent-sdk && npm ls --depth 0",
+  { timeout: 600 },
+);
+if (install.exitCode !== 0) throw new Error(install.stderr);
+console.log(install.stdout.trim().split("\n").pop()); // └── @anthropic-ai/claude-agent-sdk@…
+```
+
+```bash title="curl" run
+CMD=$(curl -sS -X POST "$FIBRE_API_URL/v1/sandboxes/$SBX/commands" \
+  -H "Authorization: Bearer $FIBRE_API_KEY" -H "Content-Type: application/json" \
+  -d '{"command": ["sh", "-c", "mkdir -p /work/agent && cd /work/agent && npm init -y >/dev/null && npm install @anthropic-ai/claude-agent-sdk && npm ls --depth 0"]}' | jq -r .command_id)
+curl -sSN "$FIBRE_API_URL/v1/sandboxes/$SBX/commands/$CMD/logs?follow=1" -H "Authorization: Bearer $FIBRE_API_KEY"
+```
+</CodeGroup>
+
+```text title="output" expected
+@anthropic-ai/claude-agent-sdk@
+```
+
+## write the agent
+
+The agent takes its task from `TASK` and works in the directory it is started in. With `--continue` it resumes the
+most recent session of that directory.
+
+<CodeGroup>
+```typescript title="TypeScript" run
+await sbx.files.write(
+  "/work/agent/agent.mjs",
+  `import { query } from "@anthropic-ai/claude-agent-sdk";
+
+for await (const message of query({
+  prompt: process.env.TASK,
+  options: {
+    allowedTools: ["Read", "Edit", "Glob", "Grep", "Bash"],
+    permissionMode: "acceptEdits",
+    continue: process.argv.includes("--continue"),
+  },
+})) {
+  if (message.type === "result") console.log(message.subtype === "success" ? message.result : message.subtype);
+}
+`,
+);
+```
+
+```bash title="curl" run
+AGENT=$(mktemp)
+cat > "$AGENT" <<'EOF'
+import { query } from "@anthropic-ai/claude-agent-sdk";
+
+for await (const message of query({
+  prompt: process.env.TASK,
+  options: {
+    allowedTools: ["Read", "Edit", "Glob", "Grep", "Bash"],
+    permissionMode: "acceptEdits",
+    continue: process.argv.includes("--continue"),
+  },
+})) {
+  if (message.type === "result") console.log(message.subtype === "success" ? message.result : message.subtype);
+}
+EOF
+curl -sS -X PUT "$FIBRE_API_URL/v1/sandboxes/$SBX/files/content?path=/work/agent/agent.mjs" \
+  -H "Authorization: Bearer $FIBRE_API_KEY" --data-binary @"$AGENT"
+```
+</CodeGroup>
+
+## give it a repository
+
+<CodeGroup>
+```typescript title="TypeScript" run
+const clone = await sbx.run(["git", "clone", "--depth", "1", "https://github.com/octocat/Hello-World", "/work/repo"]);
+if (clone.exitCode !== 0) throw new Error(clone.stderr);
+```
+
+```bash title="curl" run
+curl -sS -X POST "$FIBRE_API_URL/v1/sandboxes/$SBX/exec" \
+  -H "Authorization: Bearer $FIBRE_API_KEY" -H "Content-Type: application/json" \
+  -d '{"command": ["git", "clone", "--depth", "1", "https://github.com/octocat/Hello-World", "/work/repo"]}'
+```
+</CodeGroup>
+
+```json title="response" expected
+{ "exit_code": 0 }
+```
+
+## run a task
+
+The agent runs in the repository, with the key and the task given to this one command (more on the key
+[below](#the-api-key)).
+
+<CodeGroup>
+```typescript title="TypeScript" norun reason="needs your Anthropic API key"
+const task = await sbx.run(["node", "/work/agent/agent.mjs"], {
+  cwd: "/work/repo",
+  env: { ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY!, TASK: "Rewrite the README as a short project description with a usage section." },
+  timeout: 1800,
+});
+console.log(task.stdout);
+```
+
+```bash title="curl" norun reason="needs your Anthropic API key"
+jq -n --arg key "$ANTHROPIC_API_KEY" '{
+  command: ["node", "/work/agent/agent.mjs"], cwd: "/work/repo",
+  env: {ANTHROPIC_API_KEY: $key, TASK: "Rewrite the README as a short project description with a usage section."}
+}' | curl -sS -X POST "$FIBRE_API_URL/v1/sandboxes/$SBX/commands" \
+  -H "Authorization: Bearer $FIBRE_API_KEY" -H "Content-Type: application/json" -d @-
+```
+</CodeGroup>
+
+## the next task, later
+
+The sandbox falls asleep after its idle timeout, with its memory and files saved, and the next command wakes it. The
+SDK keeps its sessions on the sandbox's disk, so `--continue` picks up with the whole conversation: no session store
+of your own, nothing to rebuild.
+
+<CodeGroup>
+```typescript title="TypeScript" norun reason="needs your Anthropic API key"
+const again = await Sandbox.get(sbx.id);
+const next = await again.run(["node", "/work/agent/agent.mjs", "--continue"], {
+  cwd: "/work/repo",
+  env: { ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY!, TASK: "Now add a contributing section." },
+  timeout: 1800,
+});
+```
+
+```bash title="curl" norun reason="needs your Anthropic API key"
+jq -n --arg key "$ANTHROPIC_API_KEY" '{
+  command: ["node", "/work/agent/agent.mjs", "--continue"], cwd: "/work/repo",
+  env: {ANTHROPIC_API_KEY: $key, TASK: "Now add a contributing section."}
+}' | curl -sS -X POST "$FIBRE_API_URL/v1/sandboxes/$SBX/commands" \
+  -H "Authorization: Bearer $FIBRE_API_KEY" -H "Content-Type: application/json" -d @-
+```
+</CodeGroup>
+
+An agent that stays running between tasks (a small server your app sends them to, for example) can sleep too: start it with
+`keep: true` and the process itself is kept across sleep, in the middle of its conversation. See
+[sleep, wake and lifetime](/guide/sandboxes/sleep-and-wake).
+
+## the API key
+
+- The key is given to the one command you pass it to, and to the programs that command starts. Other commands in the
+  sandbox don't get it in their environment, fibre doesn't write it into the sandbox's files, and fibre's API never
+  returns it.
+- Everything the agent runs while it works can read it: a test, an install script, code in the repository. Treat it
+  as visible to that repository's code. Use a key you can revoke, with a spending limit.
+- Don't put the key in the sandbox's own environment (`env` in the SDK, `env_vars` in the API, when you create it):
+  every command would get it.
+
+## delete it
+
+<CodeGroup>
+```typescript title="TypeScript" run
+await sbx.delete();
+```
+
+```bash title="curl" run
+curl -sS -X DELETE "$FIBRE_API_URL/v1/sandboxes/$SBX" -H "Authorization: Bearer $FIBRE_API_KEY"
+```
+</CodeGroup>
+
+```json title="response" expected
+{ "deleted": true }
+```

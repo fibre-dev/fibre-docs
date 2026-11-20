@@ -1,0 +1,48 @@
+---
+title: "errors"
+description: "The shape of every error the fibre API answers with, and how to read it."
+---
+
+Every error answer has the same fields:
+
+| field | what it is |
+|---|---|
+| `error` | a sentence for a person |
+| `code` | a stable name for the error, safe to match on in code |
+| `request_id` | the request's ID, for support |
+| `docs_url` | this page, at the code's entry |
+
+Some errors add fields of their own, such as `details` for a request that failed validation. In the TypeScript SDK every
+error is a `FibreError` with the same fields (`status`, `code`, `requestId`, `docsUrl`), and a subclass by kind:
+`ValidationError`, `AuthenticationError`, `PaymentRequiredError`, `PermissionDeniedError`, `NotFoundError`,
+`ConflictError`, `RateLimitError` (with `retryAfter` in seconds) and `ServerError`; `ConnectionError` and
+`TimeoutError` when no answer came.
+
+<CodeGroup>
+```typescript title="TypeScript" run
+import { FibreError, Sandbox } from "@fibre-dev/sdk";
+
+try {
+  await Sandbox.get("sbx-0000000000");
+} catch (e) {
+  if (!(e instanceof FibreError)) throw e;
+  console.log(e.status, e.code, e.requestId, e.docsUrl); // 404 sandbox_not_found req_… https://fibre.dev/docs/reference/errors#sandbox_not_found
+}
+```
+
+```bash title="curl" run
+curl -sS "$FIBRE_API_URL/v1/sandboxes/sbx-0000000000" -H "Authorization: Bearer $FIBRE_API_KEY"
+```
+</CodeGroup>
+
+```json title="response" expected
+{ "code": "sandbox_not_found", "error": "…", "request_id": "…", "docs_url": "https://fibre.dev/docs/reference/errors#sandbox_not_found" }
+```
+
+With `--fail-with-body` curl exits with status 22 on an error answer, which stops a script.
+
+```bash run expect-exit=22
+curl -sS --fail-with-body "$FIBRE_API_URL/v1/sandboxes/sbx-0000000000" -H "Authorization: Bearer $FIBRE_API_KEY"
+```
+
+The entry for each code, what causes it and what to do, is generated from the API with the rest of the reference.

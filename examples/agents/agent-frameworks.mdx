@@ -1,0 +1,169 @@
+---
+title: "a sandbox tool for your agent framework"
+description: "Give an agent built with the AI SDK, OpenAI Agents or any framework one tool that runs its commands in a fibre sandbox, one sandbox per conversation."
+---
+
+When your agent's loop runs in your own app, built with the AI SDK, OpenAI Agents or another framework, give it a
+tool that runs commands in a fibre sandbox. The model writes the commands, the sandbox runs them, and your app never
+runs code a model wrote. Each conversation gets its own sandbox, which sleeps between turns with everything the agent
+installed and wrote.
+
+You need your fibre API key in `FIBRE_API_KEY` and `FIBRE_API_URL=https://api.fibre.dev`, and for the steps that ask
+the model, your model provider's key.
+
+## one sandbox per conversation
+
+Label the sandbox with the conversation, so the next turn finds it again.
+
+<CodeGroup>
+```typescript title="TypeScript" run
+import { Sandbox, TimeoutError } from "@fibre-dev/sdk";
+
+const conversation = "conv-42";
+const sbx = await Sandbox.create({ lifetime: 3600, labels: { conversation } });
+```
+
+```bash title="curl" run capture=SBX=.id
+curl -sS -X POST "$FIBRE_API_URL/v1/sandboxes" \
+  -H "Authorization: Bearer $FIBRE_API_KEY" -H "Content-Type: application/json" \
+  -d '{"lifetime_sec": 3600, "labels": {"conversation": "conv-42"}}'
+```
+</CodeGroup>
+
+On a later turn, look it up before making a new one:
+
+<CodeGroup>
+```typescript title="TypeScript" run
+let found: Sandbox | undefined;
+for await (const s of Sandbox.list({ labels: { conversation } })) found ??= s;
+console.log(found?.id === sbx.id); // true
+```
+
+```bash title="curl" run
+curl -sS "$FIBRE_API_URL/v1/sandboxes?label.conversation=conv-42&limit=1" -H "Authorization: Bearer $FIBRE_API_KEY"
+```
+</CodeGroup>
+
+```json title="response" expected
+{ "sandboxes": [{ "labels": { "conversation": "conv-42" } }] }
+```
+
+## the tool's function
+
+The tool is one function: it runs a shell command in the sandbox and returns the exit code and the end of the output,
+so a noisy command can't fill the model's context. A command that runs past two minutes is stopped, and the model
+is told so.
+
+<CodeGroup>
+```typescript title="TypeScript" run
+const MAX_OUTPUT = 10_000;
+
+async function runCommand(command: string) {
+  try {
+    const r = await sbx.run(command, { timeout: 120 });
+    return { exitCode: r.exitCode, stdout: r.stdout.slice(-MAX_OUTPUT), stderr: r.stderr.slice(-MAX_OUTPUT) };
+  } catch (e) {
+    if (e instanceof TimeoutError) return { error: "stopped after 120 seconds" };
+    throw e;
+  }
+}
+
+console.log(await runCommand('python3 -c "print(6 * 7)"')); // { exitCode: 0, stdout: '42\n', stderr: '' }
+```
+
+```bash title="curl" run
+curl -sS -X POST "$FIBRE_API_URL/v1/sandboxes/$SBX/exec" \
+  -H "Authorization: Bearer $FIBRE_API_KEY" -H "Content-Type: application/json" \
+  -d '{"command": ["sh", "-c", "python3 -c \"print(6 * 7)\""]}'
+```
+</CodeGroup>
+
+```json title="response" expected
+{ "exit_code": 0, "stdout": "42\n" }
+```
+
+This is the call the model makes, through your app, each time it uses the tool.
+
+## hand it to the framework
+
+Every framework declares a tool the same way: a name, a description the model reads, the shape of its input, and the
+function. Here it is with the AI SDK and with OpenAI Agents.
+
+<CodeGroup>
+```typescript title="AI SDK" norun reason="needs a model key and the ai, @ai-sdk/anthropic and zod packages"
+import { generateText, isStepCount, tool } from "ai";
+import { anthropic } from "@ai-sdk/anthropic";
+import { z } from "zod";
+
+const { text } = await generateText({
+  model: anthropic("claude-sonnet-5-5"),
+  tools: {
+    run_command: tool({
+      description: "Run a shell command in this conversation's Linux sandbox. Returns the exit code and output.",
+      inputSchema: z.object({ command: z.string().describe("the shell command to run") }),
+      execute: ({ command }) => runCommand(command),
+    }),
+  },
+  stopWhen: isStepCount(20),
+  prompt: "Which Python version is installed? Write a script that prints it, then run the script.",
+});
+console.log(text);
+```
+
+```typescript title="OpenAI Agents" norun reason="needs a model key and the @openai/agents and zod packages"
+import { Agent, run, tool } from "@openai/agents";
+import { z } from "zod";
+
+const agent = new Agent({
+  name: "coder",
+  instructions: "You work in a Linux sandbox. Use run_command to run shell commands.",
+  tools: [
+    tool({
+      name: "run_command",
+      description: "Run a shell command in this conversation's Linux sandbox. Returns the exit code and output.",
+      parameters: z.object({ command: z.string() }),
+      execute: ({ command }) => runCommand(command),
+    }),
+  ],
+});
+
+const result = await run(agent, "Which Python version is installed? Write a script that prints it, then run the script.");
+console.log(result.finalOutput);
+```
+</CodeGroup>
+
+Other frameworks (Mastra, LangGraph, your own loop) take the same function. Add tools for
+[files](/guide/sandboxes/files) (`sbx.files.read`, `sbx.files.write`) when the agent edits a lot of them, or
+the sandbox's [browser](/guide/sandboxes/browser) for the web.
+
+## what the model can reach
+
+- Only the sandbox. Your fibre API key stays in your app, inside `runCommand`; the model sends a command and gets its
+  output back, and never sees the key.
+- The sandbox has none of your app's secrets or files unless you put them there. Anything you do put there, the model
+  can read with its next command.
+- The sandbox can reach the internet, so the agent can install packages and fetch pages.
+
+## between turns
+
+The sandbox falls asleep after its idle timeout, with its memory and files saved, and the next tool call wakes it, so
+a conversation can pause for minutes or hours and pick up with everything in place. More in
+[sleep, wake and lifetime](/guide/sandboxes/sleep-and-wake).
+
+## when the conversation ends
+
+<CodeGroup>
+```typescript title="TypeScript" run
+await sbx.delete();
+```
+
+```bash title="curl" run
+curl -sS -X DELETE "$FIBRE_API_URL/v1/sandboxes/$SBX" -H "Authorization: Bearer $FIBRE_API_KEY"
+```
+</CodeGroup>
+
+```json title="response" expected
+{ "deleted": true }
+```
+
+If you don't, it is deleted when its lifetime ends.

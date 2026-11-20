@@ -1,0 +1,164 @@
+---
+title: "sandboxes"
+description: "An isolated Linux machine you start with one call, run commands in, and that sleeps with its memory when nobody uses it."
+---
+
+A sandbox is an isolated Linux machine for code you do not want on your own: an agent's commands, code a model wrote,
+a dev server, a test run. You start one with one call, run commands in it, and delete it when you are done. When
+nobody uses it, it sleeps with its memory and comes back on the next call.
+
+The examples use the TypeScript SDK or `curl`, with your API key in `FIBRE_API_KEY` and the API's address in
+`FIBRE_API_URL` (https://api.fibre.dev).
+
+## create a sandbox
+
+<CodeGroup>
+```typescript title="TypeScript" run
+import { NotFoundError, Sandbox } from "@fibre-dev/sdk";
+
+const sbx = await Sandbox.create({ labels: { team: "docs" }, lifetime: 600 });
+console.log(sbx.status, sbx.runtime); // running standard
+```
+
+```bash title="curl" run capture=SBX=.id
+curl -sS -X POST "$FIBRE_API_URL/v1/sandboxes" \
+  -H "Authorization: Bearer $FIBRE_API_KEY" -H "Content-Type: application/json" \
+  -d '{"labels": {"team": "docs"}, "lifetime_sec": 600}'
+```
+</CodeGroup>
+
+```json title="response" expected
+{ "id": "…", "status": "running", "runtime": "standard", "ready": "process", "labels": { "team": "docs" } }
+```
+
+With no `image` the sandbox runs fibre's default image: a shell, Python, Node, git and a browser. The answer comes
+once the sandbox is running. `runtime` says where it runs: `standard` unless the sandbox needs a full VM (Docker
+inside, for example), which you ask for with `"runtime": "vm"` or a need such as `"needs": ["docker"]`.
+
+## run a command
+
+<CodeGroup>
+```typescript title="TypeScript" run
+const { exitCode, stdout } = await sbx.run(["python3", "-c", "print(6 * 7)"]);
+console.log(exitCode, stdout); // 0 42
+```
+
+```bash title="curl" run
+curl -sS -X POST "$FIBRE_API_URL/v1/sandboxes/$SBX/exec" \
+  -H "Authorization: Bearer $FIBRE_API_KEY" -H "Content-Type: application/json" \
+  -d '{"command": ["python3", "-c", "print(6 * 7)"]}'
+```
+</CodeGroup>
+
+```json title="response" expected
+{ "exit_code": 0, "stdout": "42\n" }
+```
+
+An exec returns when the command ends, and is stopped after 30 seconds. For longer commands (an install, a test
+run, a server) use the [commands API](/guide/sandboxes/running-commands), which runs them in the background and keeps
+their output.
+
+## find it again
+
+Labels are yours to set; list by them.
+
+<CodeGroup>
+```typescript title="TypeScript" run
+for await (const s of Sandbox.list({ labels: { team: "docs" } })) console.log(s.id, s.labels);
+```
+
+```bash title="curl" run
+curl -sS "$FIBRE_API_URL/v1/sandboxes?label.team=docs&limit=10" -H "Authorization: Bearer $FIBRE_API_KEY"
+```
+</CodeGroup>
+
+```json title="response" expected
+{ "sandboxes": [{ "labels": { "team": "docs" } }] }
+```
+
+<CodeGroup>
+```typescript title="TypeScript" run
+const same = await Sandbox.get(sbx.id);
+console.log(same.hostname, same.expiresAt);
+```
+
+```bash title="curl" run
+curl -sS "$FIBRE_API_URL/v1/sandboxes/$SBX" -H "Authorization: Bearer $FIBRE_API_KEY"
+```
+</CodeGroup>
+
+```json title="response" expected
+{ "id": "…", "hostname": "…", "expires_at": "…" }
+```
+
+## sleep and wake
+
+A sandbox sleeps after `idle_timeout_sec` without activity (300 seconds unless you set it; `0` never sleeps). Its
+memory is saved: the next call to it, an exec or a request to its URL, wakes it, and the programs in it carry on
+where they were.
+
+On the `standard` runtime, a program that keeps running after its command returned (a dev server, a daemon) is
+kept across a sleep only when it was started through fibre's commands API with `"keep": true`. On `vm` every
+process is kept. More in [sleep, wake and lifetime](/guide/sandboxes/sleep-and-wake).
+
+## lifetime
+
+A sandbox is deleted when its lifetime ends: `lifetime_sec`, 3600 seconds unless you set it, between 60 seconds and
+a day. A new lifetime counts from now.
+
+<CodeGroup>
+```typescript title="TypeScript" run
+await sbx.update({ lifetime: 900 });
+console.log(sbx.expiresAt);
+```
+
+```bash title="curl" run
+curl -sS -X PATCH "$FIBRE_API_URL/v1/sandboxes/$SBX" \
+  -H "Authorization: Bearer $FIBRE_API_KEY" -H "Content-Type: application/json" \
+  -d '{"lifetime_sec": 900}'
+```
+</CodeGroup>
+
+```json title="response" expected
+{ "id": "…", "expires_at": "…" }
+```
+
+## delete it
+
+<CodeGroup>
+```typescript title="TypeScript" run
+await sbx.delete();
+```
+
+```bash title="curl" run
+curl -sS -X DELETE "$FIBRE_API_URL/v1/sandboxes/$SBX" -H "Authorization: Bearer $FIBRE_API_KEY"
+```
+</CodeGroup>
+
+```json title="response" expected
+{ "deleted": true }
+```
+
+## when something is wrong
+
+Every error answers with a message, a stable `code`, the `request_id` and a `docs_url` that points at the code's
+entry in the reference.
+
+<CodeGroup>
+```typescript title="TypeScript" run
+try {
+  await Sandbox.get(sbx.id);
+} catch (e) {
+  if (!(e instanceof NotFoundError)) throw e;
+  console.log(e.code, e.requestId, e.docsUrl); // sandbox_not_found req_… https://fibre.dev/docs/reference/errors#sandbox_not_found
+}
+```
+
+```bash title="curl" run
+curl -sS "$FIBRE_API_URL/v1/sandboxes/$SBX" -H "Authorization: Bearer $FIBRE_API_KEY"
+```
+</CodeGroup>
+
+```json title="response" expected
+{ "code": "sandbox_not_found", "error": "…", "request_id": "…", "docs_url": "…" }
+```

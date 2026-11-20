@@ -1,0 +1,172 @@
+---
+title: "opencode in a sandbox"
+description: "Install OpenCode in a fibre sandbox, run a task on a repository with opencode run and the model of your choice, and continue the session later."
+---
+
+`opencode run` sends OpenCode one task without opening its interface, with any model it supports. Run it in a fibre
+sandbox and it has a Linux machine of its own for the repository, away from your computer. Between tasks the sandbox
+sleeps with its memory and files, so the next task continues the same session.
+
+You need your fibre API key in `FIBRE_API_KEY`, `FIBRE_API_URL=https://api.fibre.dev`, and the key of the model's
+provider for the steps that ask the model. The example uses Anthropic (`ANTHROPIC_API_KEY`); OpenAI is
+`OPENAI_API_KEY`, and every provider reads its own variable.
+
+## start a sandbox
+
+<CodeGroup>
+```typescript title="TypeScript" run
+import { Sandbox } from "@fibre-dev/sdk";
+
+const sbx = await Sandbox.create({ lifetime: 3600, labels: { example: "opencode" } });
+```
+
+```bash title="curl" run capture=SBX=.id
+curl -sS -X POST "$FIBRE_API_URL/v1/sandboxes" \
+  -H "Authorization: Bearer $FIBRE_API_KEY" -H "Content-Type: application/json" \
+  -d '{"lifetime_sec": 3600, "labels": {"example": "opencode"}}'
+```
+</CodeGroup>
+
+## install OpenCode
+
+OpenCode comes from npm; the sandbox's default image has Node. The install takes under a minute, so it runs as a
+[command](/guide/sandboxes/running-commands).
+
+<CodeGroup>
+```typescript title="TypeScript" run
+const install = await sbx.run("npm install -g opencode-ai && opencode --version", { timeout: 600 });
+if (install.exitCode !== 0) throw new Error(install.stderr);
+console.log(install.stdout.trim().split("\n").pop()); // 1.19.6
+```
+
+```bash title="curl" run
+CMD=$(curl -sS -X POST "$FIBRE_API_URL/v1/sandboxes/$SBX/commands" \
+  -H "Authorization: Bearer $FIBRE_API_KEY" -H "Content-Type: application/json" \
+  -d '{"command": ["sh", "-c", "npm install -g opencode-ai && opencode --version"]}' | jq -r .command_id)
+curl -sSN "$FIBRE_API_URL/v1/sandboxes/$SBX/commands/$CMD/logs?follow=1" -H "Authorization: Bearer $FIBRE_API_KEY"
+```
+</CodeGroup>
+
+```text title="output" expected
+"exit_code":0
+```
+
+## give it a repository
+
+<CodeGroup>
+```typescript title="TypeScript" run
+const clone = await sbx.run(["git", "clone", "--depth", "1", "https://github.com/octocat/Hello-World", "/work/repo"]);
+if (clone.exitCode !== 0) throw new Error(clone.stderr);
+```
+
+```bash title="curl" run
+curl -sS -X POST "$FIBRE_API_URL/v1/sandboxes/$SBX/exec" \
+  -H "Authorization: Bearer $FIBRE_API_KEY" -H "Content-Type: application/json" \
+  -d '{"command": ["git", "clone", "--depth", "1", "https://github.com/octocat/Hello-World", "/work/repo"]}'
+```
+</CodeGroup>
+
+```json title="response" expected
+{ "exit_code": 0 }
+```
+
+## run a task
+
+`-m` picks the model as `provider/model`; `opencode models anthropic` lists the ones a provider offers once its key
+is set. `--auto` approves what OpenCode would otherwise stop to ask about, since nobody is there to answer; the fibre
+sandbox keeps whatever it does inside it. The key is given to this one command (more on the key
+[below](#the-api-key)).
+
+<CodeGroup>
+```typescript title="TypeScript" norun reason="needs your Anthropic API key"
+const task = await sbx.run(
+  ["sh", "-c", 'cd /work/repo && opencode run --auto -m anthropic/claude-sonnet-5-5 "$TASK"'],
+  {
+    env: { ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY!, TASK: "Rewrite the README as a short project description with a usage section." },
+    timeout: 1800,
+  },
+);
+console.log(task.stdout);
+```
+
+```bash title="curl" norun reason="needs your Anthropic API key"
+jq -n --arg key "$ANTHROPIC_API_KEY" '{
+  command: ["sh", "-c", "cd /work/repo && opencode run --auto -m anthropic/claude-sonnet-5-5 \"$TASK\""],
+  env: {ANTHROPIC_API_KEY: $key, TASK: "Rewrite the README as a short project description with a usage section."}
+}' | curl -sS -X POST "$FIBRE_API_URL/v1/sandboxes/$SBX/commands" \
+  -H "Authorization: Bearer $FIBRE_API_KEY" -H "Content-Type: application/json" -d @-
+```
+</CodeGroup>
+
+Add `--format json` for one JSON event per line instead of text. In curl, follow the command's logs as in the install
+step.
+
+## see what it changed
+
+<CodeGroup>
+```typescript title="TypeScript" run
+const diff = await sbx.run(["git", "-C", "/work/repo", "diff", "--stat"]);
+console.log(diff.stdout);
+```
+
+```bash title="curl" run
+curl -sS -X POST "$FIBRE_API_URL/v1/sandboxes/$SBX/exec" \
+  -H "Authorization: Bearer $FIBRE_API_KEY" -H "Content-Type: application/json" \
+  -d '{"command": ["git", "-C", "/work/repo", "diff", "--stat"]}'
+```
+</CodeGroup>
+
+```json title="response" expected
+{ "exit_code": 0 }
+```
+
+## the next task, later
+
+The sandbox falls asleep after its idle timeout, with its memory and files saved, and the next command wakes it.
+OpenCode keeps its sessions on the sandbox's disk, so `--continue` carries on the last one.
+
+<CodeGroup>
+```typescript title="TypeScript" norun reason="needs your Anthropic API key"
+const again = await Sandbox.get(sbx.id);
+const next = await again.run(
+  ["sh", "-c", 'cd /work/repo && opencode run --continue --auto -m anthropic/claude-sonnet-5-5 "$TASK"'],
+  { env: { ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY!, TASK: "Now add a contributing section." }, timeout: 1800 },
+);
+```
+
+```bash title="curl" norun reason="needs your Anthropic API key"
+jq -n --arg key "$ANTHROPIC_API_KEY" '{
+  command: ["sh", "-c", "cd /work/repo && opencode run --continue --auto -m anthropic/claude-sonnet-5-5 \"$TASK\""],
+  env: {ANTHROPIC_API_KEY: $key, TASK: "Now add a contributing section."}
+}' | curl -sS -X POST "$FIBRE_API_URL/v1/sandboxes/$SBX/commands" \
+  -H "Authorization: Bearer $FIBRE_API_KEY" -H "Content-Type: application/json" -d @-
+```
+</CodeGroup>
+
+`--session <id>` continues a particular session instead.
+
+## the API key
+
+- The key is given to the one command you pass it to, and to the programs that command starts. Other commands in the
+  sandbox don't get it in their environment, fibre doesn't write it into the sandbox's files, and fibre's API never
+  returns it.
+- Everything OpenCode runs while it works can read it: a test, an install script, code in the repository. Treat it as
+  visible to that repository's code. Use a key you can revoke, with a spending limit.
+- Don't put the key in the sandbox's own environment (`env` in the SDK, `env_vars` in the API, when you create it):
+  every command would get it.
+
+## delete it
+
+<CodeGroup>
+```typescript title="TypeScript" run
+await sbx.delete();
+```
+
+```bash title="curl" run
+curl -sS -X DELETE "$FIBRE_API_URL/v1/sandboxes/$SBX" -H "Authorization: Bearer $FIBRE_API_KEY"
+```
+</CodeGroup>
+
+```json title="response" expected
+{ "deleted": true }
+```

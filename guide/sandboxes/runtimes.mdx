@@ -1,0 +1,104 @@
+---
+title: "runtimes"
+description: "standard for most work, vm for a full virtual machine with its own kernel. Leave it out and fibre picks; the calls, price and sleep are the same."
+---
+
+Every sandbox runs on one of two runtimes. **standard** is the default, right for running code, tools, tests, servers
+and a browser. **vm** is a full virtual machine with its own kernel, for software that needs one: Docker, systemd,
+FUSE, kernel features. Both have the same calls, the same price per size, and the same sleep and wake.
+
+## which one
+
+| you need | runtime |
+|---|---|
+| to run code, scripts, tests, a dev server, a browser | standard (leave it out) |
+| Docker inside the sandbox | vm (`"needs": ["docker"]`) |
+| systemd as the first process, services managed by it | vm (`"init": "systemd"`) |
+| FUSE, loop devices, cgroups, iptables | vm (`"needs": [...]`) |
+| a desktop to watch or drive | vm (`"needs": ["desktop"]`) |
+
+## let fibre pick
+
+Say what the sandbox needs, and fibre picks the runtime that has it. The answer says what it chose and why:
+
+<CodeGroup>
+```typescript title="TypeScript" run
+import { FibreError, Sandbox } from "@fibre-dev/sdk";
+
+const vm = await Sandbox.create({ needs: ["docker"], lifetime: 600, labels: { docs: "runtimes" } });
+console.log(vm.runtime, vm.runtimeReason); // vm needs:docker
+```
+
+```bash title="curl" run capture=SBX=.id
+curl -sS -X POST "$FIBRE_API_URL/v1/sandboxes" \
+  -H "Authorization: Bearer $FIBRE_API_KEY" -H "Content-Type: application/json" \
+  -d '{"needs": ["docker"], "lifetime_sec": 600, "labels": {"docs": "runtimes"}}'
+```
+</CodeGroup>
+
+```json title="response" expected
+{ "id": "…", "runtime": "vm", "runtime_reason": "needs:docker" }
+```
+
+The needs that call for `vm`: `docker`, `fuse`, `cgroups`, `loop`, `iptables`. Two more, `browser` and `desktop`,
+start the sandbox with those ready, on `vm` unless you name a runtime. With no needs and no runtime, the answer says
+`"runtime": "standard"` and `"runtime_reason": "default"`.
+
+<CodeGroup>
+```typescript title="TypeScript" run
+await vm.delete();
+```
+
+```bash title="curl" run
+curl -sS -X DELETE "$FIBRE_API_URL/v1/sandboxes/$SBX" -H "Authorization: Bearer $FIBRE_API_KEY"
+```
+</CodeGroup>
+
+## name it
+
+`"runtime": "standard"` or `"runtime": "vm"` sets it. A need the runtime you named does not have is refused rather
+than ignored:
+
+<CodeGroup>
+```typescript title="TypeScript" run
+try {
+  await Sandbox.create({ runtime: "standard", needs: ["docker"] });
+} catch (e) {
+  if (!(e instanceof FibreError)) throw e;
+  console.log(e.code); // needs_vm
+}
+```
+
+```bash title="curl" run
+curl -sS -X POST "$FIBRE_API_URL/v1/sandboxes" \
+  -H "Authorization: Bearer $FIBRE_API_KEY" -H "Content-Type: application/json" \
+  -d '{"runtime": "standard", "needs": ["docker"]}'
+```
+</CodeGroup>
+
+```json title="response" expected
+{ "code": "needs_vm", "error": "…" }
+```
+
+<CodeGroup>
+```typescript title="TypeScript" norun  reason="needs an image whose first process can be systemd"
+const machine = await Sandbox.create({ image: "<an image with systemd>", runtime: "vm", init: "systemd" });
+```
+
+```bash title="curl" norun reason="needs an image whose first process can be systemd"
+curl -sS -X POST "$FIBRE_API_URL/v1/sandboxes" \
+  -H "Authorization: Bearer $FIBRE_API_KEY" -H "Content-Type: application/json" \
+  -d '{"image": "<an image with systemd>", "runtime": "vm", "init": "systemd"}'
+```
+</CodeGroup>
+
+With `"init": "systemd"` the image's systemd is the first process, and services you enable start with the machine
+and come back after every wake.
+
+## what stays the same
+
+- Every call: exec, commands, files, sleep, wake, lifetime, labels, templates.
+- The price of each size.
+- Sleep keeps memory on both. On `vm` every process is kept; on `standard`, start programs that should keep running
+  with `keep` ([running commands](/guide/sandboxes/running-commands#keep-a-program-running)).
+- A copy of a template runs on the runtime its template was made on.

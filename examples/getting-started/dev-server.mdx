@@ -1,0 +1,96 @@
+---
+title: "a dev server with a public url"
+description: "Put a small web app in a sandbox, keep its server running, and open it at the sandbox's own https address. It sleeps when nobody visits and wakes on the next request."
+---
+
+A sandbox can serve a web app at its own https address: tell it which port the app listens on, start the server with
+`keep`, and open the sandbox's `url`. When nobody visits, the sandbox sleeps; the next request wakes it, with the
+server still running.
+
+## start a sandbox that serves port 8000
+
+<CodeGroup>
+```typescript title="TypeScript" run
+import { Sandbox } from "@fibre-dev/sdk";
+
+const sbx = await Sandbox.create({ exposedPort: 8000, lifetime: 900, labels: { example: "dev-server" } });
+```
+
+```bash title="curl" run capture=SBX=.id
+curl -sS -X POST "$FIBRE_API_URL/v1/sandboxes" \
+  -H "Authorization: Bearer $FIBRE_API_KEY" -H "Content-Type: application/json" \
+  -d '{"exposed_port": 8000, "lifetime_sec": 900, "labels": {"example": "dev-server"}}'
+```
+</CodeGroup>
+
+## put the app in it
+
+<CodeGroup>
+```typescript title="TypeScript" run
+await sbx.files.write("/app/index.html", "<h1>hello from my sandbox</h1>\n");
+```
+
+```bash title="curl" run
+printf '<h1>hello from my sandbox</h1>\n' |
+  curl -sS -X PUT "$FIBRE_API_URL/v1/sandboxes/$SBX/files/content?path=/app/index.html" \
+    -H "Authorization: Bearer $FIBRE_API_KEY" --data-binary @-
+```
+</CodeGroup>
+
+## start the server, kept running
+
+<CodeGroup>
+```typescript title="TypeScript" run
+await sbx.spawn(["python3", "-m", "http.server", "8000", "--directory", "/app"], { keep: true });
+```
+
+```bash title="curl" run
+curl -sS -X POST "$FIBRE_API_URL/v1/sandboxes/$SBX/commands" \
+  -H "Authorization: Bearer $FIBRE_API_KEY" -H "Content-Type: application/json" \
+  -d '{"command": ["python3", "-m", "http.server", "8000", "--directory", "/app"], "keep": true}'
+```
+</CodeGroup>
+
+```json title="response" expected
+{ "status": "detached" }
+```
+
+## open it
+
+<CodeGroup>
+```typescript title="TypeScript" run
+console.log(sbx.url);
+await new Promise((resolve) => setTimeout(resolve, 2000));
+console.log(await (await fetch(`${sbx.url}/`)).text()); // <h1>hello from my sandbox</h1>
+```
+
+```bash title="curl" run
+URL=$(curl -sS "$FIBRE_API_URL/v1/sandboxes/$SBX" -H "Authorization: Bearer $FIBRE_API_KEY" | jq -r .url)
+echo "$URL"
+sleep 2
+curl -sS "$URL/"
+```
+</CodeGroup>
+
+```text title="output" expected
+hello from my sandbox
+```
+
+The `url` is public: anyone who has it can open the app, with no key. Put your own sign-in in front of anything
+private.
+
+## delete it
+
+<CodeGroup>
+```typescript title="TypeScript" run
+await sbx.delete();
+```
+
+```bash title="curl" run
+curl -sS -X DELETE "$FIBRE_API_URL/v1/sandboxes/$SBX" -H "Authorization: Bearer $FIBRE_API_KEY"
+```
+</CodeGroup>
+
+```json title="response" expected
+{ "deleted": true }
+```

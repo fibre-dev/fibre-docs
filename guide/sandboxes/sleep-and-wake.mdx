@@ -1,0 +1,167 @@
+---
+title: "sleep, wake and lifetime"
+description: "An idle sandbox sleeps with its memory and wakes on the next call; you pay only while it is awake. How to tune it, keep it awake, and how long it lives."
+---
+
+A sandbox that has had nothing to do for its `idle_timeout_sec` (300 seconds unless you set it) goes to sleep. Its
+memory is saved with everything else: the programs it was running, their open files, a browser's tabs and logins. The
+next call to it wakes it, and it carries on where it was. While it sleeps you pay nothing for compute.
+
+## a sandbox that sleeps after a minute
+
+<CodeGroup>
+```typescript title="TypeScript" run
+import { Sandbox } from "@fibre-dev/sdk";
+
+const sbx = await Sandbox.create({ idleTimeout: 60, lifetime: 900, labels: { docs: "sleep" } });
+```
+
+```bash title="curl" run capture=SBX=.id
+curl -sS -X POST "$FIBRE_API_URL/v1/sandboxes" \
+  -H "Authorization: Bearer $FIBRE_API_KEY" -H "Content-Type: application/json" \
+  -d '{"idle_timeout_sec": 60, "lifetime_sec": 900, "labels": {"docs": "sleep"}}'
+```
+</CodeGroup>
+
+```json title="response" expected
+{ "id": "…", "status": "running", "idle_timeout_sec": 60 }
+```
+
+Something to find again after the wake: a variable in a running shell would be lost on a machine that only saves its
+disk.
+
+<CodeGroup>
+```typescript title="TypeScript" run
+const kept = await sbx.spawn(["python3", "-c", "import time\nwhile True: time.sleep(1)"], { keep: true });
+```
+
+```bash title="curl" run
+curl -sS -X POST "$FIBRE_API_URL/v1/sandboxes/$SBX/commands" \
+  -H "Authorization: Bearer $FIBRE_API_KEY" -H "Content-Type: application/json" \
+  -d '{"command": ["python3", "-c", "import time, os; t = time.time(); open(\"/tmp/started\", \"w\").write(str(os.getpid())); time.sleep(100000)"], "keep": true}'
+```
+</CodeGroup>
+
+```json title="response" expected
+{ "status": "detached" }
+```
+
+## watch it fall asleep
+
+<CodeGroup>
+```typescript title="TypeScript" run
+while ((await sbx.refresh()).status !== "standby") await new Promise((resolve) => setTimeout(resolve, 5000));
+console.log(sbx.status); // standby
+```
+
+```bash title="curl" run
+for i in $(seq 1 40); do
+  status=$(curl -sS "$FIBRE_API_URL/v1/sandboxes/$SBX" -H "Authorization: Bearer $FIBRE_API_KEY" | jq -r .status)
+  [ "$status" = standby ] && break
+  sleep 5
+done
+echo "$status"
+```
+</CodeGroup>
+
+```text title="output" expected
+standby
+```
+
+`status` is `running` while it is awake and `standby` while it sleeps.
+
+## wake it
+
+Any call to it wakes it: an exec, a command, a files call, a request to its `url`, a browser or desktop link.
+
+<CodeGroup>
+```typescript title="TypeScript" run
+const check = await sbx.run(`kill -0 ${kept.pid} && echo still running`);
+console.log(check.stdout); // still running
+```
+
+```bash title="curl" run
+curl -sS -X POST "$FIBRE_API_URL/v1/sandboxes/$SBX/exec" \
+  -H "Authorization: Bearer $FIBRE_API_KEY" -H "Content-Type: application/json" \
+  -d '{"command": ["sh", "-c", "kill -0 $(cat /tmp/started) && echo still running"]}'
+```
+</CodeGroup>
+
+```json title="response" expected
+{ "exit_code": 0, "stdout": "still running\n" }
+```
+
+The program started before the sleep is the same process after it.
+
+## keep it awake
+
+A sandbox stays awake while something is happening in it: a running command, an open shell, its programs working,
+network traffic. To keep it awake no matter what, set `idle_timeout_sec` to `0`. It is then billed for every second
+until it is deleted or its lifetime ends.
+
+<CodeGroup>
+```typescript title="TypeScript" run
+await sbx.update({ idleTimeout: 0 });
+```
+
+```bash title="curl" run
+curl -sS -X PATCH "$FIBRE_API_URL/v1/sandboxes/$SBX" \
+  -H "Authorization: Bearer $FIBRE_API_KEY" -H "Content-Type: application/json" \
+  -d '{"idle_timeout_sec": 0}'
+```
+</CodeGroup>
+
+```json title="response" expected
+{ "idle_timeout_sec": 0 }
+```
+
+## lifetime
+
+A sandbox is deleted when its lifetime ends, asleep or awake: `lifetime_sec`, 3600 seconds unless you set it, between
+60 seconds and a day. `expires_at` says when. A new lifetime counts from now, so extend it as often as you need:
+
+<CodeGroup>
+```typescript title="TypeScript" run
+await sbx.update({ lifetime: 1800 });
+console.log(sbx.expiresAt);
+```
+
+```bash title="curl" run
+curl -sS -X PATCH "$FIBRE_API_URL/v1/sandboxes/$SBX" \
+  -H "Authorization: Bearer $FIBRE_API_KEY" -H "Content-Type: application/json" \
+  -d '{"lifetime_sec": 1800}'
+```
+</CodeGroup>
+
+```json title="response" expected
+{ "id": "…", "expires_at": "…" }
+```
+
+## what it costs
+
+- Awake: the size's price per hour, billed by the second.
+- Asleep: nothing for compute. Its saved state counts towards your account's included storage.
+- Deleted, or past its lifetime: nothing.
+
+## on the standard runtime
+
+A program that should keep running across sleep is started with `"keep": true` (above, and in
+[running commands](/guide/sandboxes/running-commands#keep-a-program-running)). One started by a plain exec or
+command that is still running at the sleep is not there after the wake. The sandbox's own entrypoint, if its image has
+one, is always kept. On `vm` every process is kept.
+
+## clean up
+
+<CodeGroup>
+```typescript title="TypeScript" run
+await sbx.delete();
+```
+
+```bash title="curl" run
+curl -sS -X DELETE "$FIBRE_API_URL/v1/sandboxes/$SBX" -H "Authorization: Bearer $FIBRE_API_KEY"
+```
+</CodeGroup>
+
+```json title="response" expected
+{ "deleted": true }
+```

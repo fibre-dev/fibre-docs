@@ -1,0 +1,160 @@
+---
+title: "files"
+description: "Write, read, list, inspect and delete files in a sandbox, binary-safe, with any size the disk holds."
+---
+
+Files go in and out of a sandbox through the files calls: the bytes are the body, the path is a query parameter. They
+work with any content, text or binary, and wake a sleeping sandbox first.
+
+## a sandbox to follow along
+
+<CodeGroup>
+```typescript title="TypeScript" run
+import { NotFoundError, Sandbox } from "@fibre-dev/sdk";
+
+const sbx = await Sandbox.create({ lifetime: 600, labels: { docs: "files" } });
+```
+
+```bash title="curl" run capture=SBX=.id
+curl -sS -X POST "$FIBRE_API_URL/v1/sandboxes" \
+  -H "Authorization: Bearer $FIBRE_API_KEY" -H "Content-Type: application/json" \
+  -d '{"lifetime_sec": 600, "labels": {"docs": "files"}}'
+```
+</CodeGroup>
+
+## write a file
+
+<CodeGroup>
+```typescript title="TypeScript" run
+const written = await sbx.files.write("/work/hello.txt", "hello\n");
+console.log(written.size); // 6
+```
+
+```bash title="curl" run
+printf 'hello\n' | curl -sS -X PUT "$FIBRE_API_URL/v1/sandboxes/$SBX/files/content?path=/work/hello.txt" \
+  -H "Authorization: Bearer $FIBRE_API_KEY" --data-binary @-
+```
+</CodeGroup>
+
+```json title="response" expected
+{ "path": "/work/hello.txt", "size": 6, "sha256": "…" }
+```
+
+Missing directories on the way are created. Writing to a path that exists replaces the file. Send a file from disk
+with `--data-binary @app.tar.gz`.
+
+## read it back
+
+<CodeGroup>
+```typescript title="TypeScript" run
+console.log(await sbx.files.read("/work/hello.txt")); // hello
+```
+
+```bash title="curl" run
+curl -sS "$FIBRE_API_URL/v1/sandboxes/$SBX/files/content?path=/work/hello.txt" -H "Authorization: Bearer $FIBRE_API_KEY"
+```
+</CodeGroup>
+
+```text title="output" expected
+hello
+```
+
+Save it to disk with `-o hello.txt`.
+
+## list a directory
+
+<CodeGroup>
+```typescript title="TypeScript" run
+const { entries } = await sbx.files.list("/work");
+console.log(entries.map((e) => e.name)); // [ "hello.txt" ]
+```
+
+```bash title="curl" run
+curl -sS "$FIBRE_API_URL/v1/sandboxes/$SBX/files?path=/work" -H "Authorization: Bearer $FIBRE_API_KEY"
+```
+</CodeGroup>
+
+```json title="response" expected
+{ "path": "/work", "entries": [{ "name": "hello.txt", "type": "file", "size": 6 }], "truncated": false }
+```
+
+One level at a time. Each entry has `name`, `type`, `size`, `mode`, `mtime`, `uid` and `gid`; `limit` caps how many
+come back, and `truncated` says whether there were more.
+
+## inspect one file
+
+<CodeGroup>
+```typescript title="TypeScript" run
+const info = await sbx.files.stat("/work/hello.txt", { checksum: "sha256" });
+console.log(info.type, info.size, info.sha256);
+```
+
+```bash title="curl" run
+curl -sS "$FIBRE_API_URL/v1/sandboxes/$SBX/files/stat?path=/work/hello.txt&checksum=sha256" -H "Authorization: Bearer $FIBRE_API_KEY"
+```
+</CodeGroup>
+
+```json title="response" expected
+{ "name": "hello.txt", "type": "file", "size": 6, "sha256": "…" }
+```
+
+`checksum=sha256` is optional: leave it out on large files you only want the size of.
+
+## delete
+
+<CodeGroup>
+```typescript title="TypeScript" run
+await sbx.files.remove("/work", { recursive: true });
+```
+
+```bash title="curl" run
+curl -sS -X DELETE "$FIBRE_API_URL/v1/sandboxes/$SBX/files?path=/work&recursive=true" -H "Authorization: Bearer $FIBRE_API_KEY"
+```
+</CodeGroup>
+
+```json title="response" expected
+{ "deleted": true, "path": "/work" }
+```
+
+A directory needs `recursive=true`. A path that does not exist answers `404` with the code `file_not_found`:
+
+<CodeGroup>
+```typescript title="TypeScript" run
+try {
+  await sbx.files.read("/work/hello.txt");
+} catch (e) {
+  if (!(e instanceof NotFoundError)) throw e;
+  console.log(e.code); // file_not_found
+}
+```
+
+```bash title="curl" run
+curl -sS "$FIBRE_API_URL/v1/sandboxes/$SBX/files/content?path=/work/hello.txt" -H "Authorization: Bearer $FIBRE_API_KEY"
+```
+</CodeGroup>
+
+```json title="response" expected
+{ "code": "file_not_found", "error": "…" }
+```
+
+## limits
+
+- Paths are absolute.
+- A file can be as large as the sandbox's free disk: 10 to 80 GB by size.
+- Files written inside the sandbox are kept across sleep, with everything else.
+
+## clean up
+
+<CodeGroup>
+```typescript title="TypeScript" run
+await sbx.delete();
+```
+
+```bash title="curl" run
+curl -sS -X DELETE "$FIBRE_API_URL/v1/sandboxes/$SBX" -H "Authorization: Bearer $FIBRE_API_KEY"
+```
+</CodeGroup>
+
+```json title="response" expected
+{ "deleted": true }
+```

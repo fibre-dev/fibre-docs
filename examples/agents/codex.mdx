@@ -1,0 +1,174 @@
+---
+title: "codex in a sandbox"
+description: "Install OpenAI's Codex CLI in a fibre sandbox, run a task on a repository with codex exec, read the result, and resume the same session later."
+---
+
+`codex exec` runs Codex without a terminal: it works through a task, prints its progress to stderr and its final
+message to stdout. Run it in a fibre sandbox and it has a Linux machine of its own for the repository, the builds and
+the tests, away from your computer. Between tasks the sandbox sleeps with its memory and files, so the next task
+resumes the same session.
+
+You need your fibre API key in `FIBRE_API_KEY`, `FIBRE_API_URL=https://api.fibre.dev`, and an OpenAI API key in
+`CODEX_API_KEY` for the steps that ask the model.
+
+## start a sandbox
+
+<CodeGroup>
+```typescript title="TypeScript" run
+import { Sandbox } from "@fibre-dev/sdk";
+
+const sbx = await Sandbox.create({ lifetime: 3600, labels: { example: "codex" } });
+```
+
+```bash title="curl" run capture=SBX=.id
+curl -sS -X POST "$FIBRE_API_URL/v1/sandboxes" \
+  -H "Authorization: Bearer $FIBRE_API_KEY" -H "Content-Type: application/json" \
+  -d '{"lifetime_sec": 3600, "labels": {"example": "codex"}}'
+```
+</CodeGroup>
+
+## install Codex
+
+Codex comes from npm; the sandbox's default image has Node. The install takes about half a minute, so it runs as a
+[command](/guide/sandboxes/running-commands).
+
+<CodeGroup>
+```typescript title="TypeScript" run
+const install = await sbx.run("npm install -g @openai/codex && codex --version", { timeout: 600 });
+if (install.exitCode !== 0) throw new Error(install.stderr);
+console.log(install.stdout.trim().split("\n").pop()); // codex-cli 0.171.0
+```
+
+```bash title="curl" run
+CMD=$(curl -sS -X POST "$FIBRE_API_URL/v1/sandboxes/$SBX/commands" \
+  -H "Authorization: Bearer $FIBRE_API_KEY" -H "Content-Type: application/json" \
+  -d '{"command": ["sh", "-c", "npm install -g @openai/codex && codex --version"]}' | jq -r .command_id)
+curl -sSN "$FIBRE_API_URL/v1/sandboxes/$SBX/commands/$CMD/logs?follow=1" -H "Authorization: Bearer $FIBRE_API_KEY"
+```
+</CodeGroup>
+
+```text title="output" expected
+"exit_code":0
+```
+
+## give it a repository
+
+<CodeGroup>
+```typescript title="TypeScript" run
+const clone = await sbx.run(["git", "clone", "--depth", "1", "https://github.com/octocat/Hello-World", "/work/repo"]);
+if (clone.exitCode !== 0) throw new Error(clone.stderr);
+```
+
+```bash title="curl" run
+curl -sS -X POST "$FIBRE_API_URL/v1/sandboxes/$SBX/exec" \
+  -H "Authorization: Bearer $FIBRE_API_KEY" -H "Content-Type: application/json" \
+  -d '{"command": ["git", "clone", "--depth", "1", "https://github.com/octocat/Hello-World", "/work/repo"]}'
+```
+</CodeGroup>
+
+```json title="response" expected
+{ "exit_code": 0 }
+```
+
+## run a task
+
+By default `codex exec` may only read files. Codex's own flag for running inside a machine that is already isolated,
+`--dangerously-bypass-approvals-and-sandbox`, lets it edit and run commands freely; the fibre sandbox is that
+machine, so whatever it does stays inside it. The key goes in as `CODEX_API_KEY`, given to this one command, as
+Codex's docs advise (more on the key [below](#the-api-key)).
+
+<CodeGroup>
+```typescript title="TypeScript" norun reason="needs your OpenAI API key"
+const task = await sbx.run(
+  ["sh", "-c", 'cd /work/repo && codex exec --dangerously-bypass-approvals-and-sandbox "$TASK"'],
+  {
+    env: { CODEX_API_KEY: process.env.CODEX_API_KEY!, TASK: "Rewrite the README as a short project description with a usage section." },
+    timeout: 1800,
+  },
+);
+console.log(task.stdout); // Codex's final message
+```
+
+```bash title="curl" norun reason="needs your OpenAI API key"
+jq -n --arg key "$CODEX_API_KEY" '{
+  command: ["sh", "-c", "cd /work/repo && codex exec --dangerously-bypass-approvals-and-sandbox \"$TASK\""],
+  env: {CODEX_API_KEY: $key, TASK: "Rewrite the README as a short project description with a usage section."}
+}' | curl -sS -X POST "$FIBRE_API_URL/v1/sandboxes/$SBX/commands" \
+  -H "Authorization: Bearer $FIBRE_API_KEY" -H "Content-Type: application/json" -d @-
+```
+</CodeGroup>
+
+Add `--json` for one JSON event per line instead (every command Codex ran, every file it changed), or
+`--output-last-message <file>` to keep the final message in a file. In curl, follow the command's logs as in the
+install step.
+
+## see what it changed
+
+<CodeGroup>
+```typescript title="TypeScript" run
+const diff = await sbx.run(["git", "-C", "/work/repo", "diff", "--stat"]);
+console.log(diff.stdout);
+```
+
+```bash title="curl" run
+curl -sS -X POST "$FIBRE_API_URL/v1/sandboxes/$SBX/exec" \
+  -H "Authorization: Bearer $FIBRE_API_KEY" -H "Content-Type: application/json" \
+  -d '{"command": ["git", "-C", "/work/repo", "diff", "--stat"]}'
+```
+</CodeGroup>
+
+```json title="response" expected
+{ "exit_code": 0 }
+```
+
+## the next task, later
+
+The sandbox falls asleep after its idle timeout, with its memory and files saved, and the next command wakes it.
+Codex keeps its sessions on the sandbox's disk, so `codex exec resume --last` carries on the most recent one with
+everything it already knows about the repository.
+
+<CodeGroup>
+```typescript title="TypeScript" norun reason="needs your OpenAI API key"
+const again = await Sandbox.get(sbx.id);
+const next = await again.run(
+  ["sh", "-c", 'cd /work/repo && codex exec resume --last --dangerously-bypass-approvals-and-sandbox "$TASK"'],
+  { env: { CODEX_API_KEY: process.env.CODEX_API_KEY!, TASK: "Now add a contributing section." }, timeout: 1800 },
+);
+```
+
+```bash title="curl" norun reason="needs your OpenAI API key"
+jq -n --arg key "$CODEX_API_KEY" '{
+  command: ["sh", "-c", "cd /work/repo && codex exec resume --last --dangerously-bypass-approvals-and-sandbox \"$TASK\""],
+  env: {CODEX_API_KEY: $key, TASK: "Now add a contributing section."}
+}' | curl -sS -X POST "$FIBRE_API_URL/v1/sandboxes/$SBX/commands" \
+  -H "Authorization: Bearer $FIBRE_API_KEY" -H "Content-Type: application/json" -d @-
+```
+</CodeGroup>
+
+`codex exec resume <session id>` continues a particular session instead.
+
+## the API key
+
+- The key is given to the one command you pass it to, and to the programs that command starts. Other commands in the
+  sandbox don't get it in their environment, fibre doesn't write it into the sandbox's files, and fibre's API never
+  returns it.
+- Everything Codex runs while it works can read it: a test, an install script, code in the repository. Treat it as
+  visible to that repository's code. Use a key you can revoke, with a spending limit.
+- Don't put the key in the sandbox's own environment (`env` in the SDK, `env_vars` in the API, when you create it):
+  every command would get it.
+
+## delete it
+
+<CodeGroup>
+```typescript title="TypeScript" run
+await sbx.delete();
+```
+
+```bash title="curl" run
+curl -sS -X DELETE "$FIBRE_API_URL/v1/sandboxes/$SBX" -H "Authorization: Bearer $FIBRE_API_KEY"
+```
+</CodeGroup>
+
+```json title="response" expected
+{ "deleted": true }
+```

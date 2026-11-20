@@ -1,0 +1,73 @@
+---
+title: "hello sandbox"
+description: "Start a sandbox, write a Python file into it, run it, read the result, and delete the sandbox."
+---
+
+The smallest complete program: a sandbox that runs a script you hand it. Set `FIBRE_API_KEY` to your API key and
+`FIBRE_API_URL=https://api.fibre.dev`. Each step is shown with the TypeScript SDK and with `curl` (which uses `jq` to
+read the answer).
+
+## start a sandbox
+
+<CodeGroup>
+```typescript title="TypeScript" run
+import { Sandbox } from "@fibre-dev/sdk";
+
+const sbx = await Sandbox.create({ lifetime: 600, labels: { example: "hello-sandbox" } });
+```
+
+```bash title="curl" run capture=SBX=.id
+curl -sS -X POST "$FIBRE_API_URL/v1/sandboxes" \
+  -H "Authorization: Bearer $FIBRE_API_KEY" -H "Content-Type: application/json" \
+  -d '{"lifetime_sec": 600, "labels": {"example": "hello-sandbox"}}'
+```
+</CodeGroup>
+
+## write a file into it
+
+<CodeGroup>
+```typescript title="TypeScript" run
+await sbx.files.write("/tmp/hello.py", 'import platform\nprint(f"hello from {platform.system()} {platform.machine()}")\n');
+```
+
+```bash title="curl" run
+printf 'import platform\nprint(f"hello from {platform.system()} {platform.machine()}")\n' |
+  curl -sS -X PUT "$FIBRE_API_URL/v1/sandboxes/$SBX/files/content?path=/tmp/hello.py" \
+    -H "Authorization: Bearer $FIBRE_API_KEY" --data-binary @-
+```
+</CodeGroup>
+
+## run it
+
+<CodeGroup>
+```typescript title="TypeScript" run
+const { stdout } = await sbx.run(["python3", "/tmp/hello.py"]);
+console.log(stdout); // hello from Linux x86_64
+```
+
+```bash title="curl" run
+curl -sS -X POST "$FIBRE_API_URL/v1/sandboxes/$SBX/exec" \
+  -H "Authorization: Bearer $FIBRE_API_KEY" -H "Content-Type: application/json" \
+  -d '{"command": ["python3", "/tmp/hello.py"]}' | jq -r .stdout
+```
+</CodeGroup>
+
+```text title="output" expected
+hello from Linux x86_64
+```
+
+## delete it
+
+<CodeGroup>
+```typescript title="TypeScript" run
+await sbx.delete();
+```
+
+```bash title="curl" run
+curl -sS -X DELETE "$FIBRE_API_URL/v1/sandboxes/$SBX" -H "Authorization: Bearer $FIBRE_API_KEY"
+```
+</CodeGroup>
+
+```json title="response" expected
+{ "deleted": true }
+```

@@ -1,0 +1,627 @@
+---
+title: "typescript sdk"
+description: "Every class, method, option and error of @fibre-dev/sdk 0.1.0, generated from its source."
+---
+
+`npm install @fibre-dev/sdk` (Node 20 and later, Bun, Deno; no dependencies). The key comes from `FIBRE_API_KEY`
+(or `FIBRE_TOKEN`), the address from `FIBRE_API_URL` (https://api.fibre.dev when it is not set). Times are in seconds.
+This page is generated from the SDK's own doc comments; the [guide](/guide) shows each call in use.
+
+## Sandbox
+
+A sandbox: an isolated Linux machine for code you do not want on your own. Create one, run commands in it, move files in and out, and delete it when you are done. When nobody uses it, it sleeps with its memory and comes back on the next call: every method works the same whether it is awake or asleep.
+
+### Sandbox.create()
+
+```ts norun reason="a signature"
+create(o?: SandboxCreateOptions, client?: Fibre): Promise<Sandbox>
+```
+
+Create and start a sandbox; the answer comes once it is running.
+
+### Sandbox.get()
+
+```ts norun reason="a signature"
+get(id: string, client?: Fibre): Promise<Sandbox>
+```
+
+A sandbox you created earlier, by its id, asleep or awake.
+
+### Sandbox.list()
+
+```ts norun reason="a signature"
+*list(o?: SandboxListOptions, client?: Fibre): AsyncGenerator<Sandbox, void, undefined>
+```
+
+Every sandbox of the account, newest first, optionally by labels; the pages are fetched as you go.
+
+### id
+
+```ts norun reason="a signature"
+readonly id: string
+```
+
+### files
+
+```ts norun reason="a signature"
+readonly files: Files
+```
+
+Its files: write, read, list, stat, remove.
+
+### status
+
+```ts norun reason="a signature"
+get status(): string
+```
+
+`running` while awake, `standby` while it sleeps.
+
+### runtime
+
+```ts norun reason="a signature"
+get runtime(): Runtime
+```
+
+### runtimeReason
+
+```ts norun reason="a signature"
+get runtimeReason(): string | undefined
+```
+
+Why it runs on its runtime (`default`, `requested`, `needs:docker`, …), as the create answered.
+
+### url
+
+```ts norun reason="a signature"
+get url(): string
+```
+
+Its public https address: anyone who has it can open what the sandbox serves on its exposed port.
+
+### hostname
+
+```ts norun reason="a signature"
+get hostname(): string
+```
+
+### labels
+
+```ts norun reason="a signature"
+get labels(): Record<string, string>
+```
+
+### expiresAt
+
+```ts norun reason="a signature"
+get expiresAt(): Date
+```
+
+When it will be deleted, unless its lifetime is extended.
+
+### idleTimeout
+
+```ts norun reason="a signature"
+get idleTimeout(): number
+```
+
+Seconds without activity before it sleeps.
+
+### data
+
+```ts norun reason="a signature"
+get data(): SandboxData
+```
+
+Everything the API said about it.
+
+### refresh()
+
+```ts norun reason="a signature"
+refresh(): Promise<this>
+```
+
+Its current state, from the API.
+
+### update()
+
+```ts norun reason="a signature"
+update(o: { lifetime?: number; idleTimeout?: number; labels?: Record<string, string> }): Promise<this>
+```
+
+Extend its lifetime (seconds, counted from now), change its idle timeout or its labels.
+
+### delete()
+
+```ts norun reason="a signature"
+delete(): Promise<void>
+```
+
+Delete it, with everything in it.
+
+### run()
+
+```ts norun reason="a signature"
+run(cmd: CommandLine, o?: RunOptions): Promise<CommandResult>
+```
+
+Run a command and wait for it: its exit code and all of its output. A string runs in `sh -c`; an array is the program and its arguments. No time limit unless you give `timeout` (seconds). A non-zero exit code is a result, not an error.
+
+### spawn()
+
+```ts norun reason="a signature"
+spawn(cmd: CommandLine, o?: SpawnOptions): Promise<Command>
+```
+
+Start a command in the background and get it at once: follow its `output()`, `wait()` for it, `write()` to it, `kill()` it, or find it again later with `command(id)`. With `keep: true` it runs on its own and carries on across the sandbox's sleep: start dev servers, databases and daemons this way. (On the `standard` runtime, a program still running at a sleep is kept only if it was started with `keep`.)
+
+### command()
+
+```ts norun reason="a signature"
+command(id: string): Promise<Command>
+```
+
+A command started earlier, by its id (from this or another process).
+
+### snapshot()
+
+```ts norun reason="a signature"
+snapshot(o: { name: string }): Promise<Template>
+```
+
+Save it as a template, with its memory: sandboxes created from it start already running, as this one is now. This sandbox keeps running. On the `vm` runtime, wait until its commands have ended first.
+
+### saveImage()
+
+```ts norun reason="a signature"
+saveImage(): Promise<SavedImage>
+```
+
+Save its files as an image of your account (`standard` runtime): new sandboxes and services can run it with `image`. Only what the sandbox changed is stored. Memory is not part of it; a template keeps memory.
+
+### browser()
+
+```ts norun reason="a signature"
+browser(o?: { ttl?: number }): Promise<BrowserLinks>
+```
+
+Links to its browser, starting it if needed: `cdpUrl` for your code, `liveViewUrl` to watch. They work for an hour, or `ttl` seconds (60 to a day, never past the sandbox's lifetime). Treat `cdpUrl` as a password.
+
+### closeBrowser()
+
+```ts norun reason="a signature"
+closeBrowser(): Promise<void>
+```
+
+Revoke every link to its browser, close their connections and stop the browser.
+
+### desktop()
+
+```ts norun reason="a signature"
+desktop(): Promise<DesktopLink>
+```
+
+A single-use link to watch and use its desktop (a sandbox created with `needs: ["desktop"]`).
+
+### commands()
+
+```ts norun reason="a signature"
+commands(): Promise<Command[]>
+```
+
+The commands of its current awake period.
+
+## Command
+
+A command running in a sandbox, started with `sandbox.spawn()` or found again with `sandbox.command(id)`. Follow its output with `output()`, wait for it with `wait()`, write to it, or stop it. A kept command (`keep: true`) runs on its own: its status is `detached` and its output goes to the file named in `log`.
+
+### id
+
+```ts norun reason="a signature"
+readonly id: string
+```
+
+### status
+
+```ts norun reason="a signature"
+get status(): string
+```
+
+`running`, then `exited` or `killed`; `detached` for a kept command; `lost` if the sandbox lost track of it.
+
+### exitCode
+
+```ts norun reason="a signature"
+get exitCode(): number | null
+```
+
+### pid
+
+```ts norun reason="a signature"
+get pid(): number | null
+```
+
+A kept command's process id in the sandbox.
+
+### log
+
+```ts norun reason="a signature"
+get log(): string | null
+```
+
+A kept command's output file in the sandbox (read it with `sandbox.files.read`).
+
+### data
+
+```ts norun reason="a signature"
+get data(): CommandData
+```
+
+### refresh()
+
+```ts norun reason="a signature"
+refresh(): Promise<this>
+```
+
+The command's current status, from the sandbox.
+
+### output()
+
+```ts norun reason="a signature"
+*output(o?: { follow?: boolean; signal?: AbortSignal }): AsyncGenerator<OutputChunk, void, undefined>
+```
+
+The command's output as it is written, until it ends. Pass `follow: false` for what is there now. If the connection drops, it picks up where it left off.
+
+### wait()
+
+```ts norun reason="a signature"
+wait(o?: { timeout?: number; signal?: AbortSignal }): Promise<CommandResult>
+```
+
+Wait for the command to end and return its result with all of its output. With `timeout` (seconds), a command still running is stopped and a `TimeoutError` thrown. A kept command returns at once.
+
+### write()
+
+```ts norun reason="a signature"
+write(data: string | Uint8Array): Promise<void>
+```
+
+Write to the command's standard input (start it with `stdin: true`).
+
+### closeStdin()
+
+```ts norun reason="a signature"
+closeStdin(): Promise<void>
+```
+
+Close the command's standard input, so it sees the end of its input.
+
+### kill()
+
+```ts norun reason="a signature"
+kill(o?: { signal?: string; grace?: number }): Promise<this>
+```
+
+Stop the command: `TERM`, then `KILL` after `grace` seconds (5); `signal: "KILL"` stops it at once.
+
+## Files
+
+The files of a sandbox (`sandbox.files`): write, read, list, inspect and remove. Any content, text or binary, as large as the sandbox's free disk. Paths are absolute. A sleeping sandbox is woken first.
+
+### write()
+
+```ts norun reason="a signature"
+write(path: string, content: FileContent, o?: { mode?: string }): Promise<{ path: string; size: number; sha256: string }>
+```
+
+Write a file, creating the directories on the way; a file already there is replaced.
+
+### read()
+
+```ts norun reason="a signature"
+read(path: string): Promise<string>
+```
+
+A file's content as text (UTF-8).
+
+### readBytes()
+
+```ts norun reason="a signature"
+readBytes(path: string): Promise<Uint8Array>
+```
+
+A file's content as bytes.
+
+### list()
+
+```ts norun reason="a signature"
+list(path: string, o?: { limit?: number }): Promise<{ path: string; entries: FileEntry[]; truncated: boolean }>
+```
+
+One level of a directory. `truncated` says whether there were more entries than `limit`.
+
+### stat()
+
+```ts norun reason="a signature"
+stat(path: string, o?: { checksum?: "sha256" }): Promise<FileEntry & { sha256?: string }>
+```
+
+One file or directory: its type, size, mode and time; with `checksum: "sha256"`, its hash.
+
+### remove()
+
+```ts norun reason="a signature"
+remove(path: string, o?: { recursive?: boolean }): Promise<void>
+```
+
+Remove a file, or a directory with `recursive: true`.
+
+## Template
+
+A template: a sandbox saved with its memory, from `sandbox.snapshot({ name })`. Sandboxes created from it with `Sandbox.create({ template: name })` start already running, as the source was: the same files, the same programs. A template outlives the sandbox it was taken from.
+
+### Template.get()
+
+```ts norun reason="a signature"
+get(name: string, client?: Fibre): Promise<Template>
+```
+
+A template by its name.
+
+### Template.list()
+
+```ts norun reason="a signature"
+list(client?: Fibre): Promise<Template[]>
+```
+
+Every template of the account.
+
+### name
+
+```ts norun reason="a signature"
+readonly name: string
+```
+
+### from
+
+```ts norun reason="a signature"
+get from(): string | null
+```
+
+The sandbox it was taken from.
+
+### createdAt
+
+```ts norun reason="a signature"
+get createdAt(): Date
+```
+
+### sizeBytes
+
+```ts norun reason="a signature"
+get sizeBytes(): number | null
+```
+
+How much it stores, in bytes.
+
+### data
+
+```ts norun reason="a signature"
+get data(): TemplateData
+```
+
+### delete()
+
+```ts norun reason="a signature"
+delete(): Promise<void>
+```
+
+Delete it. Refused while sandboxes created from it still exist.
+
+## Fibre
+
+
+
+### baseUrl
+
+```ts norun reason="a signature"
+readonly baseUrl: string
+```
+
+### timeout
+
+```ts norun reason="a signature"
+readonly timeout: number
+```
+
+### maxRetries
+
+```ts norun reason="a signature"
+readonly maxRetries: number
+```
+
+### url()
+
+```ts norun reason="a signature"
+url(path: string, query?: RequestOptions["query"]): string
+```
+
+The URL of an API path, with its query.
+
+### fetch()
+
+```ts norun reason="a signature"
+fetch(method: string, path: string, o?: RequestOptions): Promise<Response>
+```
+
+A request's raw answer: errors become `FibreError`s, failures to connect are tried again when safe.
+
+### json()
+
+```ts norun reason="a signature"
+json<T>(method: string, path: string, o?: RequestOptions): Promise<T>
+```
+
+A request whose answer is JSON.
+
+## options and results
+
+### BrowserLinks
+
+Links to a sandbox's browser. `cdpUrl` is a credential: anyone who has it can control the browser until `expiresAt`.
+
+| field | type | |
+|---|---|---|
+| `cdpUrl` | `string` | For a DevTools client: Playwright `chromium.connectOverCDP(cdpUrl)`, Puppeteer `connect({ browserWSEndpoint })`. |
+| `liveViewUrl` | `string` | A page that shows the browser and passes on clicks and keys, and nothing else: safe to share with a person. |
+| `expiresAt` | `Date` |  |
+
+### CommandLine
+
+A command: a string runs in `sh -c`, an array is the program and its arguments.
+
+```ts norun reason="a type"
+export type CommandLine = string | string[];
+```
+
+### CommandResult
+
+The finished result of a command.
+
+| field | type | |
+|---|---|---|
+| `exitCode` | `number \| null` |  |
+| `status` | `string` | `exited`, or `killed` when it was stopped. |
+| `stdout` | `string` |  |
+| `stderr` | `string` |  |
+
+### DesktopLink
+
+A single-use link to a sandbox's desktop: whoever opens it first watches and uses it.
+
+| field | type | |
+|---|---|---|
+| `url` | `string` |  |
+| `expiresIn` | `number` | Seconds before an unopened link expires. |
+
+### FibreOptions
+
+| field | type | |
+|---|---|---|
+| `apiKey?` | `string` | An API key. Defaults to `FIBRE_API_KEY`, or `FIBRE_TOKEN`. |
+| `baseUrl?` | `string` | The API's address. Defaults to `FIBRE_API_URL`, or https://api.fibre.dev. |
+| `timeout?` | `number` | Seconds before a request is given up (60). Streams of output are not limited by it. |
+| `maxRetries?` | `number` | How many times a request that failed to connect, or met a busy or unavailable API, is tried again (2). |
+| `fetch?` | `typeof fetch` | A `fetch` to use instead of the global one (tests, proxies). |
+
+### FileContent
+
+```ts norun reason="a type"
+export type FileContent = string | Uint8Array | ArrayBuffer | Blob;
+```
+
+### Need
+
+What a sandbox needs: the first five call for `vm`; `browser` and `desktop` start it with those ready.
+
+```ts norun reason="a type"
+export type Need = "docker" | "fuse" | "cgroups" | "loop" | "iptables" | "browser" | "desktop";
+```
+
+### OutputChunk
+
+A piece of a command's output, as it was written.
+
+| field | type | |
+|---|---|---|
+| `stream` | `"stdout" \| "stderr"` |  |
+| `data` | `string` |  |
+
+### RunOptions
+
+| field | type | |
+|---|---|---|
+| `cwd?` | `string` |  |
+| `env?` | `Record<string, string>` |  |
+| `timeout?` | `number` | Seconds; a command still running then is stopped and a `TimeoutError` thrown. No limit by default. |
+| `signal?` | `AbortSignal` |  |
+
+### Runtime
+
+Where a sandbox runs: `standard` for most work, `vm` for a full virtual machine with its own kernel.
+
+```ts norun reason="a type"
+export type Runtime = "standard" | "vm";
+```
+
+### SandboxCreateOptions
+
+| field | type | |
+|---|---|---|
+| `image?` | `string` | The image to run. Left out: fibre's default image (a shell, Python, Node, git and a browser). |
+| `size?` | `Size` | small, default, large or xlarge. |
+| `runtime?` | `Runtime` | `standard` for most work, `vm` for a full virtual machine with its own kernel. Left out, fibre picks. |
+| `needs?` | `Need[]` | What the sandbox needs: `docker`, `fuse`, `cgroups`, `loop`, `iptables` (these call for `vm`), `browser`, `desktop`. |
+| `init?` | `"systemd"` | `systemd` as the first process (`vm` only). |
+| `env?` | `Record<string, string>` | Environment variables for everything run in it. |
+| `labels?` | `Record<string, string>` | Your own labels, to find it again with `Sandbox.list({ labels })`. |
+| `idleTimeout?` | `number` | Seconds without activity before it sleeps (300); `0` never sleeps. |
+| `lifetime?` | `number` | Seconds before it is deleted (3600), 60 to 86400; extend it later with `update({ lifetime })`. |
+| `exposedPort?` | `number` | The port its `url` serves. |
+| `template?` | `string` | Start from a template: a sandbox saved with its memory, already running. |
+| `network?` | `{ block?: boolean; allow?: string[] }` | Which sites it may reach: `{ block: true }`, or `{ allow: ["example.com", …] }`. |
+| `entrypoint?` | `string[]` | The command its image runs, instead of the image's own. |
+| `ready?` | `"port" \| "process"` | When the answer comes: `process`, once it runs (the default with fibre's image, a template, `init` or a desktop); `port`, once something listens on `exposedPort` (the default with an image of your own). Pass `process` for an image that serves nothing. |
+| `timeout?` | `number` | Seconds to wait for the answer (300): a first start of an image can take a while. |
+
+### SandboxListOptions
+
+| field | type | |
+|---|---|---|
+| `labels?` | `Record<string, string>` | Only sandboxes with every one of these labels. |
+| `pageSize?` | `number` | How many to fetch per page (50, at most 200). |
+
+### SavedImage
+
+An image saved from a sandbox's files: use it as `image` for new sandboxes.
+
+| field | type | |
+|---|---|---|
+| `image` | `string` |  |
+| `sizeBytes` | `number` |  |
+| `changesBytes` | `number` | How much of it the sandbox changed. |
+
+### Size
+
+```ts norun reason="a type"
+export type Size = "small" | "default" | "large" | "xlarge";
+```
+
+### SpawnOptions
+
+| field | type | |
+|---|---|---|
+| `cwd?` | `string` |  |
+| `env?` | `Record<string, string>` |  |
+| `keep?` | `boolean` | Keep it running on its own, across the sandbox's sleep: for dev servers, databases, daemons. |
+| `stdin?` | `boolean` | Open its standard input, to `write()` to it. |
+| `timeoutSec?` | `number` | Seconds after which the sandbox stops it. |
+
+## errors
+
+Every error is a `FibreError` with `status`, `code`, `requestId`, `docsUrl` and the whole answer as `body`; catch a subclass for the kind you handle. The codes are listed in [errors](/reference/errors).
+
+| error | when |
+|---|---|
+| `FibreError` |  |
+| `ValidationError` | The request was malformed or failed validation (400). `body.details` says which fields. |
+| `AuthenticationError` | No API key, or one that is not valid (401). |
+| `PaymentRequiredError` | The account's plan or balance does not allow this (402). |
+| `PermissionDeniedError` | The key may not do this (403). |
+| `NotFoundError` | No such sandbox, command, file or template (404). |
+| `ConflictError` | The request conflicts with the current state (409), e.g. a need the chosen runtime cannot meet. |
+| `RateLimitError` | Too many requests, or a limit of the plan reached (429). `retryAfter` is in seconds when the API says. |
+| `ServerError` | The platform could not do it right now (5xx), e.g. no capacity to start a sandbox. Retrying later may work. |
+| `ConnectionError` | The API could not be reached. |
+| `TimeoutError` | A request, or a command run with a timeout, took longer than allowed. |

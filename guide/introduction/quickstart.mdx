@@ -1,0 +1,88 @@
+---
+title: "quickstart"
+description: "Start a sandbox, run a command in it, and delete it, in three calls."
+---
+
+Three calls: create a sandbox, run a command in it, delete it. All you need is an API key from your fibre dashboard,
+and the TypeScript SDK or `curl`.
+
+## set your key
+
+```bash norun reason="your own key goes here"
+export FIBRE_API_KEY="<your api key>"
+export FIBRE_API_URL="https://api.fibre.dev"
+```
+
+For TypeScript, add the SDK to your project; it reads the same two variables (Node 20 and later, Bun, Deno):
+
+```bash norun reason="installs into your own project"
+npm install @fibre-dev/sdk
+```
+
+## create a sandbox
+
+<CodeGroup>
+```typescript title="TypeScript" run
+import { Sandbox } from "@fibre-dev/sdk";
+
+const sbx = await Sandbox.create({ lifetime: 600 });
+console.log(sbx.id, sbx.status); // sbx-… running
+```
+
+```bash title="curl" run capture=SBX=.id
+curl -sS -X POST "$FIBRE_API_URL/v1/sandboxes" \
+  -H "Authorization: Bearer $FIBRE_API_KEY" -H "Content-Type: application/json" \
+  -d '{"lifetime_sec": 600}'
+```
+</CodeGroup>
+
+```json title="response" expected
+{ "id": "…", "status": "running", "runtime": "standard" }
+```
+
+The answer comes once the sandbox is running. Keep its `id`: every other call names it.
+
+## run a command in it
+
+<CodeGroup>
+```typescript title="TypeScript" run
+const result = await sbx.run(`python3 -c 'print("hello from a sandbox")'`);
+console.log(result.stdout); // hello from a sandbox
+```
+
+```bash title="curl" run
+curl -sS -X POST "$FIBRE_API_URL/v1/sandboxes/$SBX/exec" \
+  -H "Authorization: Bearer $FIBRE_API_KEY" -H "Content-Type: application/json" \
+  -d '{"command": ["python3", "-c", "print(\"hello from a sandbox\")"]}'
+```
+</CodeGroup>
+
+```json title="response" expected
+{ "exit_code": 0, "stdout": "hello from a sandbox\n" }
+```
+
+## delete it
+
+<CodeGroup>
+```typescript title="TypeScript" run
+await sbx.delete();
+```
+
+```bash title="curl" run
+curl -sS -X DELETE "$FIBRE_API_URL/v1/sandboxes/$SBX" -H "Authorization: Bearer $FIBRE_API_KEY"
+```
+</CodeGroup>
+
+```json title="response" expected
+{ "deleted": true }
+```
+
+You do not have to delete a sandbox you want to keep: when nobody uses it, it sleeps and costs nothing for compute
+until the next call wakes it.
+
+## next
+
+- [sandboxes](/guide/sandboxes/overview): what a sandbox is, labels, lifetime and errors.
+- [running commands](/guide/sandboxes/running-commands): commands that take longer than a few seconds, their
+  output, and programs that keep running.
+- [sleep and wake](/guide/sandboxes/sleep-and-wake): what sleeping keeps, what wakes it, what it costs.

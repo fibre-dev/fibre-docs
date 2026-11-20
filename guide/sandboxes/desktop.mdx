@@ -1,0 +1,130 @@
+---
+title: "desktop"
+description: "A full desktop with a browser and a code editor, which a person can watch in their browser and an agent can drive with screenshots, clicks and keys."
+---
+
+`"needs": ["desktop"]` gives a sandbox a full desktop: a window manager, a browser and a code editor. A person opens it
+in their own browser from a link; an agent drives it with screenshots, clicks and keystrokes run as commands. The open
+windows and apps are kept across sleep.
+
+## a desktop sandbox
+
+<CodeGroup>
+```typescript title="TypeScript" run
+import { Sandbox } from "@fibre-dev/sdk";
+
+const desk = await Sandbox.create({ needs: ["desktop"], lifetime: 900, labels: { docs: "desktop" } });
+console.log(desk.runtime); // vm
+```
+
+```bash title="curl" run capture=SBX=.id
+curl -sS -X POST "$FIBRE_API_URL/v1/sandboxes" \
+  -H "Authorization: Bearer $FIBRE_API_KEY" -H "Content-Type: application/json" \
+  -d '{"needs": ["desktop"], "lifetime_sec": 900, "labels": {"docs": "desktop"}}'
+```
+</CodeGroup>
+
+```json title="response" expected
+{ "runtime": "vm", "runtime_reason": "needs:desktop", "desktop_url": "…", "desktop_expires_in": 300 }
+```
+
+The answer comes once the desktop is ready. A desktop runs on the `vm` runtime.
+
+## watch it
+
+Open `desktop_url` in your browser to see the screen and use it. The link works once: whoever opens it first watches
+and uses the desktop. If nobody opens it within `desktop_expires_in` seconds, it expires. Ask for a new one at any time:
+
+<CodeGroup>
+```typescript title="TypeScript" run
+const link = await desk.desktop();
+console.log(link.expiresIn); // 300
+```
+
+```bash title="curl" run
+curl -sS -X POST "$FIBRE_API_URL/v1/sandboxes/$SBX/desktop" \
+  -H "Authorization: Bearer $FIBRE_API_KEY" -H "Content-Type: application/json" -d '{}'
+```
+</CodeGroup>
+
+```json title="response" expected
+{ "url": "…", "expires_in": 300 }
+```
+
+## drive it from an agent
+
+An agent sees the screen through screenshots and acts with clicks and keys, each one an exec. The screen is display
+`:1`.
+
+<CodeGroup>
+```typescript title="TypeScript" run
+await desk.run("DISPLAY=:1 scrot -o /tmp/screen.png");
+```
+
+```bash title="curl" run
+curl -sS -X POST "$FIBRE_API_URL/v1/sandboxes/$SBX/exec" \
+  -H "Authorization: Bearer $FIBRE_API_KEY" -H "Content-Type: application/json" \
+  -d '{"command": ["sh", "-c", "DISPLAY=:1 scrot -o /tmp/screen.png && echo saved"]}'
+```
+</CodeGroup>
+
+```json title="response" expected
+{ "exit_code": 0, "stdout": "saved\n" }
+```
+
+<CodeGroup>
+```typescript title="TypeScript" run
+const png = await desk.files.readBytes("/tmp/screen.png");
+console.log(png.byteLength);
+```
+
+```bash title="curl" run
+curl -sS "$FIBRE_API_URL/v1/sandboxes/$SBX/files/content?path=/tmp/screen.png" -H "Authorization: Bearer $FIBRE_API_KEY" -o screen.png
+file screen.png
+```
+</CodeGroup>
+
+```text title="output" expected
+PNG image data
+```
+
+Clicks and keys go through `xdotool`:
+
+<CodeGroup>
+```typescript title="TypeScript" run
+await desk.run("DISPLAY=:1 xdotool mousemove 640 400 click 1 && DISPLAY=:1 xdotool type hello");
+```
+
+```bash title="curl" run
+curl -sS -X POST "$FIBRE_API_URL/v1/sandboxes/$SBX/exec" \
+  -H "Authorization: Bearer $FIBRE_API_KEY" -H "Content-Type: application/json" \
+  -d '{"command": ["sh", "-c", "DISPLAY=:1 xdotool mousemove 640 400 click 1 && DISPLAY=:1 xdotool type hello && echo done"]}'
+```
+</CodeGroup>
+
+```json title="response" expected
+{ "exit_code": 0, "stdout": "done\n" }
+```
+
+## sleep
+
+A desktop sleeps once nobody is watching it and nothing runs through fibre (no exec, command, shell or file transfer)
+for its idle timeout. Its own programs do not keep it awake. Opening a new link, or any call, wakes it with the same
+windows, tabs and editor.
+
+## clean up
+
+<CodeGroup>
+```typescript title="TypeScript" run
+await desk.delete();
+```
+
+```bash title="curl" run
+curl -sS -X DELETE "$FIBRE_API_URL/v1/sandboxes/$SBX" -H "Authorization: Bearer $FIBRE_API_KEY"
+rm -f screen.png
+```
+</CodeGroup>
+
+```json title="response" expected
+{ "deleted": true }
+```

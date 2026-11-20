@@ -1,0 +1,194 @@
+---
+title: "running commands"
+description: "Run a command and wait for it, or start it in the background, read its output, stop it, or keep it running across sleep."
+---
+
+There are two ways to run a command. **exec** runs it and answers when it ends, for anything that takes a few
+seconds. **commands** start it in the background: you get an id at once, check on it, read its output as it grows, and
+stop it if you need to. Use commands for installs, test runs, builds and servers.
+
+## a sandbox to follow along
+
+<CodeGroup>
+```typescript title="TypeScript" run
+import { Sandbox } from "@fibre-dev/sdk";
+
+const sbx = await Sandbox.create({ lifetime: 900, labels: { docs: "commands" } });
+```
+
+```bash title="curl" run capture=SBX=.id
+curl -sS -X POST "$FIBRE_API_URL/v1/sandboxes" \
+  -H "Authorization: Bearer $FIBRE_API_KEY" -H "Content-Type: application/json" \
+  -d '{"lifetime_sec": 900, "labels": {"docs": "commands"}}'
+```
+</CodeGroup>
+
+## run and wait
+
+<CodeGroup>
+```typescript title="TypeScript" run
+const r = await sbx.run("echo hello; echo careful >&2; exit 2");
+console.log(r); // { exitCode: 2, status: "exited", stdout: "hello\n", stderr: "careful\n" }
+```
+
+```bash title="curl" run
+curl -sS -X POST "$FIBRE_API_URL/v1/sandboxes/$SBX/exec" \
+  -H "Authorization: Bearer $FIBRE_API_KEY" -H "Content-Type: application/json" \
+  -d '{"command": ["sh", "-c", "echo hello; echo careful >&2; exit 2"]}'
+```
+</CodeGroup>
+
+```json title="response" expected
+{ "exit_code": 2, "stdout": "hello\n", "stderr": "careful\n" }
+```
+
+An exec is stopped after 30 seconds; the SDK's `run` has no such limit, because it runs the command through the commands
+below and waits for it (give it a `timeout` in seconds if you want one). A command is an array: the program and its arguments, with no shell unless you
+start one (`sh -c`, as here).
+
+## run in the background
+
+<CodeGroup>
+```typescript title="TypeScript" run
+const job = await sbx.spawn("for i in 1 2 3; do echo line $i; sleep 1; done; exit 3");
+console.log(job.id, job.status); // … running
+```
+
+```bash title="curl" run capture=CMD=.command_id
+curl -sS -X POST "$FIBRE_API_URL/v1/sandboxes/$SBX/commands" \
+  -H "Authorization: Bearer $FIBRE_API_KEY" -H "Content-Type: application/json" \
+  -d '{"command": ["sh", "-c", "for i in 1 2 3; do echo line $i; sleep 1; done; exit 3"]}'
+```
+</CodeGroup>
+
+```json title="response" expected
+{ "command_id": "…", "status": "running" }
+```
+
+The answer comes at once, with the command's id. You can also give it `cwd`, `env` (an object of variables) and
+`timeout_sec`.
+
+## check on it
+
+<CodeGroup>
+```typescript title="TypeScript" run
+await new Promise((resolve) => setTimeout(resolve, 5000));
+await job.refresh();
+console.log(job.status, job.exitCode); // exited 3
+```
+
+```bash title="curl" run
+sleep 5
+curl -sS "$FIBRE_API_URL/v1/sandboxes/$SBX/commands/$CMD" -H "Authorization: Bearer $FIBRE_API_KEY"
+```
+</CodeGroup>
+
+```json title="response" expected
+{ "command_id": "…", "status": "exited", "exit_code": 3 }
+```
+
+`status` is `running` until the command ends, then `exited` (with its `exit_code`) or `killed`. `GET
+…/commands` lists every command of the sandbox.
+
+## read its output
+
+<CodeGroup>
+```typescript title="TypeScript" run
+for await (const { stream, data } of job.output()) process[stream].write(data);
+```
+
+```bash title="curl" run
+curl -sS "$FIBRE_API_URL/v1/sandboxes/$SBX/commands/$CMD/logs" -H "Authorization: Bearer $FIBRE_API_KEY"
+```
+</CodeGroup>
+
+```text title="output" expected
+{"event":"end","exit_code":3,"status":"exited"}
+```
+
+The output comes as one JSON object per line: `{"stream": "stdout", "data": "line 1\nline 2\nline 3\n", "offset": 0}`
+for what the command printed, then `{"event": "end", …}` once it has ended. Add `follow=1` to keep the connection open
+and receive new output as it is written, until the command ends:
+
+```bash norun reason="follows the output until the command ends"
+curl -sSN "$FIBRE_API_URL/v1/sandboxes/$SBX/commands/$CMD/logs?follow=1" -H "Authorization: Bearer $FIBRE_API_KEY"
+```
+
+To pick up where you left off, pass `stdout_offset` and `stderr_offset`: the number of bytes of each you already have.
+
+## stop it
+
+<CodeGroup>
+```typescript title="TypeScript" run
+const long = await sbx.spawn(["sleep", "600"]);
+await long.kill();
+console.log(long.status); // killed
+```
+
+```bash title="curl" run
+LONG=$(curl -sS -X POST "$FIBRE_API_URL/v1/sandboxes/$SBX/commands" \
+  -H "Authorization: Bearer $FIBRE_API_KEY" -H "Content-Type: application/json" \
+  -d '{"command": ["sleep", "600"]}' | jq -r .command_id)
+curl -sS -X POST "$FIBRE_API_URL/v1/sandboxes/$SBX/commands/$LONG/kill" \
+  -H "Authorization: Bearer $FIBRE_API_KEY" -H "Content-Type: application/json" -d '{}'
+```
+</CodeGroup>
+
+```json title="response" expected
+{ "command_id": "…", "status": "killed" }
+```
+
+A kill sends `TERM`, waits up to 5 seconds, then stops the command for good. `{"signal": "KILL"}` skips the wait;
+`grace_s` changes it (at most 60).
+
+## keep a program running
+
+A dev server, a database or a daemon should keep running after the call that started it, and across the sandbox's
+sleep. Start it with `"keep": true`:
+
+<CodeGroup>
+```typescript title="TypeScript" run
+const server = await sbx.spawn(["python3", "-m", "http.server", "8000"], { keep: true });
+console.log(server.status, server.pid, server.log); // detached … /tmp/…
+```
+
+```bash title="curl" run
+curl -sS -X POST "$FIBRE_API_URL/v1/sandboxes/$SBX/commands" \
+  -H "Authorization: Bearer $FIBRE_API_KEY" -H "Content-Type: application/json" \
+  -d '{"command": ["python3", "-m", "http.server", "8000"], "keep": true}'
+```
+</CodeGroup>
+
+```json title="response" expected
+{ "command_id": "…", "status": "detached", "keep": true, "pid": "…", "log": "…" }
+```
+
+A kept program is `detached`: it runs on its own, its output goes to the file named in `log` (read it with the
+[files](/guide/sandboxes/files) calls), and it carries on where it was when the sandbox wakes from sleep.
+
+On the `standard` runtime, start long-running programs this way: a program started by a plain exec or command that is
+still running when the sandbox sleeps is not there after the wake. On `vm`, every process is kept either way.
+
+## limits
+
+- exec: 30 seconds. Commands: as long as the sandbox lives, or `timeout_sec`.
+- A running command keeps the sandbox awake. Commands belong to the sandbox's current awake period: once it sleeps,
+  which happens only after its commands have ended, their status and output go with it. Kept programs and their log
+  files stay.
+- A call to a sleeping sandbox wakes it first.
+
+## clean up
+
+<CodeGroup>
+```typescript title="TypeScript" run
+await sbx.delete();
+```
+
+```bash title="curl" run
+curl -sS -X DELETE "$FIBRE_API_URL/v1/sandboxes/$SBX" -H "Authorization: Bearer $FIBRE_API_KEY"
+```
+</CodeGroup>
+
+```json title="response" expected
+{ "deleted": true }
+```
