@@ -42,6 +42,11 @@
       "github": "https://github.com/fibre-dev"
     }
   },
+  "seo": {
+    "metatags": {
+      "robots": "noindex"
+    }
+  },
   "navigation": {
     "tabs": [
       {
